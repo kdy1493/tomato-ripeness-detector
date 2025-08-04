@@ -13,9 +13,13 @@ wheels/
 data/tomato_detection/
 data/laboro_tomato/
 
-# Training results (large files: graphs, prediction images, weights)
-train_results/
-runs/
+# Training results (exclude large files but keep key results)
+train_results/*/weights/last.pt
+train_results/*/val_batch*.jpg
+train_results/*/train_batch*.jpg
+runs/*/weights/last.pt
+runs/*/val_batch*.jpg
+runs/*/train_batch*.jpg
 
 # Cache files
 *.cache
@@ -32,22 +36,4 @@ models/*.pt
 # Package manager files
 uv.lock
 
-# IDE and editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Temporary files
-*.tmp
-*.temp
+.python-version
