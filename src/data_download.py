@@ -1,8 +1,14 @@
 import kagglehub
+import dataset_tools as dtools
 
-# Download latest version
+# Download kaggle dataset
+# 1. laboro-tomato
 # path = kagglehub.dataset_download("nexuswho/laboro-tomato" , path = "data")
 
-path = kagglehub.dataset_download("andrewmvd/tomato-detection")
+# 2. andrewmvd/tomato-detection
+# path = kagglehub.dataset_download("andrewmvd/tomato-detection")
 
-print("Path to dataset files:", path)
+# Download datasetninja dataset 
+dtools.download(dataset='AgRobTomato Dataset', dst_dir='~/dataset-ninja/')
+
+# print("Path to dataset files:", path)

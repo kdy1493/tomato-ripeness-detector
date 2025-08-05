@@ -3,7 +3,7 @@ import cv2
 
 def main():
     # Load the best performing model
-    model_path = 'runs/yolov10n_tomato_custom/weights/best.pt'
+    model_path = "train_results/yolov10n_baseline/weights/best.pt"
     model = YOLO(model_path)
 
     # Image to be used for inference

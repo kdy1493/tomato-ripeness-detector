@@ -9,7 +9,7 @@ YOLOv10을 활용한 스마트팜 토마토 자동 탐지 및 성숙도 분류 �
 ### 주요 기능
 - **토마토 객체 탐지**: YOLOv10 기반 실시간 토마토 위치 인식
 - **성숙도 분류**: 6가지 클래스 (방울토마토/대형토마토 × 녹색/반쯤 익음/완전히 익음)
-- **고성능 모델**: mAP@0.5 82.4% 달성
+- **고성능 모델**: mAP@0.5 81.6% 달성
 
 ## 프로젝트 구조
 
@@ -42,9 +42,7 @@ source .venv/bin/activate  # Linux/Mac
 # 또는
 .venv\Scripts\activate     # Windows
 
-# 의존성 설치
-pip install ultralytics opencv-python kagglehub
-# 또는 uv 사용
+# 의존성 설치 (uv 사용 권장)
 uv sync
 ```
 
@@ -71,20 +69,20 @@ python src/predict.py
 
 ## 성능 지표
 
+최신 `yolov10n_baseline` 모델의 검증 결과입니다.
+
 | 지표 | 값 |
 |------|-----|
-| **mAP@0.5** | 82.4% |
-| **mAP@0.5-0.95** | 68.6% |
-| **F1-Score** | 0.76 |
-| **최적 Confidence** | 0.378 |
+| **mAP@0.5** | 81.6% |
+| **mAP@0.5-0.95** | 68.8% |
 
-### 클래스별 성능
-- `b_green` (녹색 방울토마토): 90.3%
-- `l_green` (녹색 대형토마토): 85.7%
-- `l_fully_ripened` (익은 대형토마토): 85.0%
-- `b_fully_ripened` (익은 방울토마토): 79.2%
-- `b_half_ripened` (반쯤 익은 방울토마토): 77.2%
-- `l_half_ripened` (반쯤 익은 대형토마토): 77.2%
+### 클래스별 성능 (mAP@0.5)
+- `b_green` (녹색 방울토마토): 91.1%
+- `l_green` (녹색 대형토마토): 84.7%
+- `l_fully_ripened` (익은 대형토마토): 82.8%
+- `b_half_ripened` (반쯤 익은 방울토마토): 80.9%
+- `l_half_ripened` (반쯤 익은 대형토마토): 76.2%
+- `b_fully_ripened` (익은 방울토마토): 74.1%
 
 ## 사용법
 
@@ -93,7 +91,7 @@ python src/predict.py
 from ultralytics import YOLO
 
 # 모델 로드
-model = YOLO('train_results/yolov10n_tomato_custom/weights/best.pt')
+model = YOLO('train_results/yolov10n_baseline/weights/best.pt')
 
 # 이미지 예측
 results = model('path/to/tomato_image.jpg')
@@ -110,7 +108,7 @@ results = model(source=0, show=True)  # 0번 카메라 사용
 
 ## 학습 결과 분석
 
-학습 완료 후 `train_results/yolov10n_tomato_custom/` 폴더에서 다음 파일들을 확인할 수 있습니다:
+학습 완료 후 `train_results/yolov10n_baseline/` 폴더에서 다음 파일들을 확인할 수 있습니다:
 
 - `results.png`: 학습 과정 종합 그래프
 - `confusion_matrix.png`: 클래스별 예측 정확도 행렬
