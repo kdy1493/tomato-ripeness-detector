@@ -21,7 +21,7 @@ def main():
         imgsz=640,
         patience=50,
         optimizer='auto',
-        project='train_results',
+        project='YOLO_train_results',
         name='yolov10n_baseline',
         exist_ok=True,
         device=device
