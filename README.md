@@ -15,17 +15,38 @@ YOLOv10을 활용한 스마트팜 토마토 자동 탐지 및 성숙도 분류 �
 
 ```
 smart-farm/
+├── .project-root          # 자동 경로 설정을 위한 마커 파일
+├── data/
+│   └── laboro_tomato/     # 데이터셋 루트
 ├── src/
-│   ├── train.py           # 모델 학습 스크립트
-│   ├── predict.py         # 추론 실행 스크립트
-│   └── data_download.py   # 데이터셋 다운로드
-├── models/
-│   ├── yolov10n.pt       # YOLOv10 기본 모델
-│   └── yolo11n.pt        # YOLO11 기본 모델
+│   ├── Yolo_train.py      # 모델 학습 스크립트
+│   ├── Yolo_predict.py    # 최종 모델 테스트 및 결과 생성 스크립트
+│   ├── fiftyone_viewer.py # FiftyOne을 사용한 결과 시각화 스크립트
+│   ├── data_download.py   # 원본 데이터셋 다운로드
+│   └── prepare_dataset.py # 데이터셋 분할 및 준비 스크립트
+├── predict_results/       # 테스트 예측 결과 저장소
 ├── train_results/         # 학습 결과 저장소
-├── pyproject.toml        # 프로젝트 의존성 설정
+├── pyproject.toml         # 프로젝트 의존성 및 설정
 └── README.md
 ```
+
+## 성능 지표
+
+`yolov10n_baseline_train` 모델을 `test` 데이터셋으로 평가한 최종 성능입니다.
+
+| 지표 | 값 |
+| :--- | :--- |
+| **mAP@0.5** | 81.6% |
+| **mAP@0.5-0.95** | 68.8% |
+
+### 클래스별 성능 (mAP@0.5)
+
+- `b_green` (녹색 방울토마토): 91.1%
+- `l_green` (녹색 대형토마토): 84.7%
+- `l_fully_ripened` (익은 대형토마토): 82.8%
+- `b_half_ripened` (반쯤 익은 방울토마토): 80.9%
+- `l_half_ripened` (반쯤 익은 대형토마토): 76.2%
+- `b_fully_ripened` (익은 방울토마토): 74.1%
 
 ## 시작하기
 
@@ -51,87 +72,47 @@ uv sync
 ```bash
 # 데이터셋 다운로드
 python src/data_download.py
+
+# 2. 검증(val) 데이터를 검증/테스트(val/test)로 분할
+python src/prepare_dataset.py
 ```
 
 ### 3. 모델 학습
 
-```bash
-# 토마토 분류 모델 학습 (100 에포크)
-python src/train.py
-```
-
-### 4. 추론 실행
+`val` 데이터셋의 구성이 변경되었으므로, 모델을 재학습하여 새로운 `val` 데이터에 최적화된 모델을 생성합니다.
 
 ```bash
-# 학습된 모델로 토마토 탐지
-python src/predict.py
+# 모델 재학습 실행
+python src/Yolo_train.py
 ```
+학습이 완료되면 `YOLO_train_results/yolov10n_baseline_train/` 폴더에 결과와 모델 가중치(`best.pt`)가 저장됩니다.
 
-## 성능 지표
+### 4. 최종 모델 평가
 
-최신 `yolov10n_baseline` 모델의 검증 결과입니다.
+재학습된 모델을 사용하여, 학습에 전혀 사용되지 않은 `test` 데이터셋으로 최종 성능을 평가합니다.
 
-| 지표 | 값 |
-|------|-----|
-| **mAP@0.5** | 81.6% |
-| **mAP@0.5-0.95** | 68.8% |
-
-### 클래스별 성능 (mAP@0.5)
-- `b_green` (녹색 방울토마토): 91.1%
-- `l_green` (녹색 대형토마토): 84.7%
-- `l_fully_ripened` (익은 대형토마토): 82.8%
-- `b_half_ripened` (반쯤 익은 방울토마토): 80.9%
-- `l_half_ripened` (반쯤 익은 대형토마토): 76.2%
-- `b_fully_ripened` (익은 방울토마토): 74.1%
-
-## 사용법
-
-### 기본 추론
-```python
-from ultralytics import YOLO
-
-# 모델 로드
-model = YOLO('train_results/yolov10n_baseline/weights/best.pt')
-
-# 이미지 예측
-results = model('path/to/tomato_image.jpg')
-
-# 결과 시각화
-results[0].show()
+```bash
+# 테스트 데이터셋으로 예측 실행
+# 결과는 YOLO_predict_results/yolov10n_baseline_predict/ 폴더에 저장됩니다.
+python src/Yolo_predict.py
 ```
+이 스크립트는 전체 예측 결과가 담긴 `predictions.json` 파일과 샘플 예측 이미지(`test_sample_prediction.jpg`)를 생성합니다.
 
-### 실시간 추론
-```python
-# 웹캠 실시간 탐지
-results = model(source=0, show=True)  # 0번 카메라 사용
+### 5. 결과 시각화 및 분석
+
+`fiftyone`을 사용하여 정답 데이터와 모델의 예측 결과를 한눈에 비교하고 분석합니다.
+
+```bash
+# FiftyOne 시각화 앱 실행
+python src/fiftyone_viewer.py
 ```
-
-## 학습 결과 분석
-
-학습 완료 후 `train_results/yolov10n_baseline/` 폴더에서 다음 파일들을 확인할 수 있습니다:
-
-- `results.png`: 학습 과정 종합 그래프
-- `confusion_matrix.png`: 클래스별 예측 정확도 행렬
-- `BoxF1_curve.png`: F1-점수 커브 (최적 성능 지점 확인)
-- `val_batch*_pred.jpg`: 검증 데이터 예측 결과 시각화
+웹 브라우저가 열리며, 각 테스트 이미지에 대한 정답(ground_truth)과 예측(predictions) 바운딩 박스를 함께 확인할 수 있습니다.
 
 ## 기술 스택
 
-- **딥러닝 프레임워크**: Ultralytics YOLO
-- **모델 아키텍처**: YOLOv10n
-- **이미지 처리**: OpenCV
-- **데이터**: Laboro Tomato Dataset
+- **AI/ML**: Ultralytics YOLOv10, PyTorch
+- **데이터 분석/시각화**: FiftyOne
+- **경로 관리**: autorootcwd
+- **데이터 처리**: OpenCV, PyYAML
 - **언어**: Python 3.11+
-
-## 라이선스
-
-이 프로젝트는 MIT 라이선스 하에 배포됩니다.
-
-## 기여하기
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
+- **패키지 관리**: uv
