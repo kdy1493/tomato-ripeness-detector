@@ -6,7 +6,6 @@ import shutil
 from pathlib import Path
 
 def download_and_move_dataset():
-
     print("--- 1. Starting Dataset Download ---")
     dest_dir = Path('data/laboro_tomato')
     
@@ -35,25 +34,29 @@ def download_and_move_dataset():
         return False
 
 
-# data/laboro_tomato/val/images 에서 50%를 data/laboro_tomato/test/images 로 이동하고, 
-# data/laboro_tomato/val/labels 에서 50%를 data/laboro_tomato/test/labels 로 이동하고,
-# data/laboro_tomato/annotations/test.json 에서 50%를 data/laboro_tomato/annotations/val.json 으로 이동하는 함수
+# data/laboro_tomato/val/images의 50%를 data/laboro_tomato/test/images로 이동하고,
+# data/laboro_tomato/val/labels의 50%를 data/laboro_tomato/test/labels로 이동하며,
+# data/laboro_tomato/annotations/test.json의 50% annotation을 data/laboro_tomato/annotations/val.json으로 분리하는 함수
 def split_dataset_files():
     """Splits the validation set into new val and test sets (50/50 split)."""
     print("\n--- 2. Preparing and Splitting Dataset ---")
     
     base_dir = Path('data/laboro_tomato')
-    val_img_dir = base_dir / 'val/images'
-    test_img_dir = base_dir / 'test/images'
+    val_img_dir = base_dir / 'val' / 'images'
+    test_img_dir = base_dir / 'test' / 'images'
 
     if test_img_dir.exists() and any(test_img_dir.iterdir()):
         print("'test' directory already exists and is not empty. Skipping split.")
-        return
+        return True
+
+    # Final robustness check: ensure val directory exists and is not empty
+    if not val_img_dir.exists() or not any(val_img_dir.iterdir()):
+        print(f"Validation directory '{val_img_dir}' is empty or does not exist. Cannot split.")
+        return False
 
     val_lbl_dir = base_dir / 'val/labels'
     test_lbl_dir = base_dir / 'test/labels'
     annotations_dir = base_dir / 'annotations'
-    yaml_path = base_dir / 'example_dataset.yaml'
     
     test_img_dir.mkdir(parents=True, exist_ok=True)
     test_lbl_dir.mkdir(parents=True, exist_ok=True)
@@ -64,7 +67,7 @@ def split_dataset_files():
     
     if not files_to_move:
         print("Not enough files in validation set to create a test split.")
-        return
+        return False
 
     print(f"Moving {len(files_to_move)} files from 'val' to 'test' directories.")
     for filename in files_to_move:
@@ -78,17 +81,9 @@ def split_dataset_files():
     original_val_json = annotations_dir / 'test.json'
     if original_val_json.exists():
         split_annotations(original_val_json, files_to_move, annotations_dir / 'test.json', annotations_dir / 'val.json')
-
-    try:
-        lines = yaml_path.read_text(encoding='utf-8').splitlines()
-        if not any('test:' in line for line in lines):
-            with yaml_path.open('a', encoding='utf-8') as f:
-                f.write('\ntest: test/images\n')
-            print(f"Updated '{yaml_path}' with test path.")
-    except FileNotFoundError:
-        print(f"Warning: Dataset YAML file not found at '{yaml_path}'")
     
     print("--- Dataset Preparation Complete ---")
+    return True
 
 
 # data/annotation/test.json 을 기준으로 50%를 test.json, 50%를 val.json 으로 나누는 함수
@@ -123,19 +118,47 @@ def split_annotations(original_json_path, files_moved, test_json_path, val_json_
     with val_json_path.open('w', encoding='utf-8') as f: json.dump(val_split, f, indent=4)
     print(f"Created new 'test.json' ({len(test_images)} images) and 'val.json' ({len(val_images)} images)")
 
+def update_yaml_file():
+    print("\n--- 3. Updating YAML Configuration File ---")
+    yaml_path = Path('data/laboro_tomato/example_dataset.yaml')
+    
+    if not yaml_path.exists():
+        print(f"Warning: Dataset YAML file not found at '{yaml_path}'. Cannot update.")
+        return
+
+    try:
+        lines = yaml_path.read_text(encoding='utf-8').splitlines()
+        
+        preserved_lines = [
+            line for line in lines 
+            if not line.strip().startswith(('path:', 'train:', 'val:', 'test:'))
+        ]
+
+        # Correct paths relative to the YAML file's location
+        new_path_lines = [
+            "train: train/images",
+            "val: val/images",
+            "test: test/images"
+        ]
+
+        final_content = '\n'.join(preserved_lines + new_path_lines)
+        yaml_path.write_text(final_content + '\n', encoding='utf-8')
+        print("YAML file updated successfully.")
+        
+    except Exception as e:
+        print(f"An error occurred while updating the YAML file: {e}")
 
 def main():
     """Main function to run the full dataset setup process."""
     print("=======================================")
     print("  Starting Full Dataset Setup Process  ")
-    print("=======================================")
     
     if download_and_move_dataset():
-        split_dataset_files()
+        if split_dataset_files():
+            update_yaml_file()
 
     print("\n=======================================")
     print("      Dataset Setup Process Finished     ")
-    print("=======================================")
 
 if __name__ == '__main__':
     main()
