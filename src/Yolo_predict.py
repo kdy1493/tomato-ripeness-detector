@@ -1,10 +1,10 @@
+import autorootcwd
 import os
 import cv2
 from ultralytics import YOLO
 import yaml
 
 def run_prediction():
-
 
     model_path = "YOLO_train_results/yolov10n_baseline/weights/best.pt"
     data_yaml_path = "data/laboro_tomato/example_dataset.yaml"
