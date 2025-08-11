@@ -7,9 +7,9 @@ from pathlib import Path
 
 def run_prediction():
 
-    model_path = "YOLO_train_results/yolov10n_baseline/weights/best.pt"
+    model_path = "YOLO_laboro_train_results/yolov10n_baseline/weights/best.pt"
     data_yaml_path = Path("data/laboro_tomato/example_dataset.yaml")
-    output_project = "YOLO_predict_results"
+    output_project = "YOLO_laboro_predict_results"
     output_name = "yolov10n_baseline_predict"
     
     model = YOLO(model_path)
