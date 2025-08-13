@@ -12,7 +12,7 @@ def view_results_in_fiftyone():
     print("--- Starting FiftyOne Visualization ---")
 
     # --- 1. 경로 설정 ---
-    predictions_path = Path("YOLO_predict_results/yolov10n_baseline_predict/predictions.json")
+    predictions_path = Path("YOLO_laboro_predict_results/yolov10n_laboro_predict/predictions.json")
     gt_path = Path("data/laboro_tomato/annotations/test.json") # Ground Truth
     data_yaml_path = Path("data/laboro_tomato/example_dataset.yaml")
 

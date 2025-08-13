@@ -1,5 +1,7 @@
 import torch
 from ultralytics import YOLO
+from pathlib import Path
+import shutil
 
 def main():
     if torch.cuda.is_available():
@@ -11,6 +13,15 @@ def main():
 
     model = YOLO('yolov10n.pt')
 
+    # 결과 폴더 초기화 (존재하면 삭제 후 재생성)
+    project = 'YOLO_laboro_train_results'
+    name = 'yolov10n_laboro'
+    output_dir = Path(project) / name
+    if output_dir.exists():
+        print(f"Existing directory found. Removing: {output_dir}")
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     # --- 모델 학습 (데이터 증강 및 고급 옵션 추가) ---
     results = model.train(
         # --- 기본 설정 ---
@@ -19,8 +30,8 @@ def main():
         batch=-1,
         imgsz=640,
         patience=50,
-        project='YOLO_train_results',
-        name='yolov10n_augmented', # 새로운 실험 이름
+        project=project,
+        name=name, # 새로운 실험 이름
         exist_ok=True,
         device=device,
         

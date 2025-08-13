@@ -13,7 +13,7 @@ def view_results_in_fiftyone():
     print("--- Starting FiftyOne Visualization (tomatOD) ---")
 
     # 1) 경로 설정: tomatOD에 맞춤
-    predictions_path = Path("YOLO_predict_results/yolov10n_augmented_tomatOD_predict/predictions.json")
+    predictions_path = Path("YOLO_tomatOD_predict_results/yolov10n_tomatOD_predict/predictions.json")
     gt_path = Path("data/tomatOD/tomatOD_annotations/tomatOD_test.json")  # COCO GT
     data_yaml_path = Path("data/tomatOD/example_dataset.yaml")
 

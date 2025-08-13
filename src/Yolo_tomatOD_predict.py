@@ -4,14 +4,22 @@ import cv2
 from ultralytics import YOLO
 import yaml
 from pathlib import Path
+import shutil
 
 
 def run_prediction():
     # 학습된 가중치 경로와 데이터셋 YAML
-    model_path = "YOLO_train_results/yolov10n_augmented_tomatOD/weights/best.pt"
+    model_path = "YOLO_tomatOD_train_results/yolov10n_tomatOD/weights/best.pt"
     data_yaml_path = Path("data/tomatOD/example_dataset.yaml")
-    output_project = "YOLO_predict_results"
-    output_name = "yolov10n_augmented_tomatOD_predict"
+    output_project = "YOLO_tomatOD_predict_results"
+    output_name = "yolov10n_tomatOD_predict"
+
+    # 결과 폴더 초기화 (존재하면 삭제 후 재생성)
+    output_dir = Path(output_project) / output_name
+    if output_dir.exists():
+        print(f"Existing directory found. Removing: {output_dir}")
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     model = YOLO(model_path)
 
