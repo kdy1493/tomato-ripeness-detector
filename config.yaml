@@ -1,0 +1,45 @@
+# fiftyone_viewer_with_config.py 실행을 위한 예시 설정 파일
+# 이 파일의 경로를 -c 또는 --config 인자로 전달하여 사용하세요.
+# 예: python src/fiftyone_viewer_with_config.py --config config.yaml
+
+# --- 필수 경로 설정 ---
+# Ground Truth COCO JSON 파일 경로
+gt: "data/laboro_tomato/annotations/train.json"
+
+# 데이터셋의 YAML 설정 파일 경로
+dataset_yaml: "data/laboro_tomato/example_dataset.yaml"
+
+# (평가 모드) Predictions JSON 파일 경로 (선택 사항)
+predictions: "YOLO_laboro_predict_results/yolov10n_laboro_predict/predictions.json"
+
+
+# --- 기본 실행 옵션 ---
+# 로드할 데이터 스플릿 ('train', 'val', 'test')
+# gt 파일명에 train/val/test가 포함된 경우 자동 유추되므로 생략 가능합니다.
+split: "train"
+
+# 사용자 정의 FiftyOne 데이터셋 이름 (선택 사항)
+# 미지정 시 (dataset_yaml)-(split)-(mode) 형식으로 자동 생성됩니다.
+# dataset_name: "my_custom_laboro_eval"
+
+# (테스트용) 로드할 최대 샘플 개수. 데이터가 많을 때 테스트 시간을 줄이거나 API 제한을 피하기 위해 사용합니다.
+limit: 5
+
+
+# --- CVAT 연동 옵션 (필요 시 주석 해제하여 사용) ---
+# FiftyOne 뷰의 데이터를 CVAT에 업로드하여 라벨링 작업을 생성하려면 true로 설정
+to_cvat: True
+# CVAT에서 라벨링이 완료된 데이터를 다시 FiftyOne으로 불러오려면 true로 설정
+from_cvat: False
+# CVAT 업로드/다운로드 작업을 식별하기 위한 고유 키. 작업별로 다르게 지정해야 합니다.
+anno_key: "my_labeling_run_1"
+# 사용 중인 CVAT 서버의 주소
+cvat_url: "https://app.cvat.ai"
+# to_cvat 사용 시, 태스크 생성 후 자동으로 CVAT 라벨링 화면을 브라우저에서 열지 여부
+launch_editor: true
+# 데이터셋이 클 경우, 지정한 개수만큼의 샘플 단위로 작업을 분할 (예: 100개씩)
+segment_size: 10
+# 생성된 CVAT 작업을 특정 사용자에게 할당
+# assignee: "username"
+# from_cvat으로 데이터를 가져온 후, CVAT 백엔드에 남아있는 관련 정보를 삭제할지 여부
+cvat_cleanup: false
