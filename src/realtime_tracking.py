@@ -101,7 +101,10 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
 
         coord_transform = None
         if motion_estimator is not None:
-            coord_transform = motion_estimator.update(frame)
+            try:
+                coord_transform = motion_estimator.update(frame)
+            except Exception:
+                coord_transform = None
 
         results = model(frame, conf=conf, verbose=False)[0]
         detections = sv.Detections.from_ultralytics(results).with_nms(
