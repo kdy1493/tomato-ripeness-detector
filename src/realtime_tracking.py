@@ -1,22 +1,5 @@
-"""
-Real-time object tracking with YOLO26 + ByteTrack.
-Supports optional Camera Motion Compensation for moving cameras.
+"""Real-time object tracking with YOLO26 + ByteTrack."""
 
-Usage:
-    # Fixed camera (webcam)
-    python src/realtime_tracking.py
-
-    # Fixed camera (RTSP stream)
-    python src/realtime_tracking.py --source rtsp://192.168.0.100:554/stream
-
-    # Moving camera with motion compensation
-    python src/realtime_tracking.py --compensation
-
-    # Custom model path and confidence
-    python src/realtime_tracking.py --model path/to/best.pt --conf 0.3
-"""
-
-import argparse
 import time
 
 import cv2
@@ -70,33 +53,40 @@ def build_motion_compensator():
     return estimator, motion_trace
 
 
-def run(args):
-    model = YOLO(args.model)
-    tracker = ByteTrackTracker(
-        minimum_consecutive_frames=args.min_frames,
-    )
+def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
+        compensation=False, min_frames=1):
+    """Run real-time tracking loop.
+
+    Args:
+        source: Webcam index (str/int) or RTSP/file path.
+        model_path: Path to YOLO weights.
+        conf: Detection confidence threshold.
+        nms: NMS IoU threshold.
+        compensation: Enable Camera Motion Compensation.
+        min_frames: Minimum consecutive frames before confirming a track.
+    """
+    model = YOLO(model_path)
+    tracker = ByteTrackTracker(minimum_consecutive_frames=min_frames)
     box_ann, label_ann, trace_ann = build_annotators()
 
     motion_estimator = None
     motion_trace_ann = None
-    if args.compensation:
+    if compensation:
         motion_estimator, motion_trace_ann = build_motion_compensator()
         print("[INFO] Camera Motion Compensation ENABLED")
     else:
         print("[INFO] Camera Motion Compensation DISABLED (fixed camera mode)")
 
-    source = args.source
-    if isinstance(source, str) and source.isdigit():
-        source = int(source)
-    cap = cv2.VideoCapture(source)
+    vid_source = int(source) if isinstance(source, str) and source.isdigit() else source
+    cap = cv2.VideoCapture(vid_source)
     if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video source: {args.source}")
+        raise RuntimeError(f"Cannot open video source: {source}")
 
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"[INFO] Source: {args.source} ({w}x{h})")
-    print(f"[INFO] Model: {args.model}")
-    print(f"[INFO] Confidence: {args.conf} / NMS: {args.nms}")
+    print(f"[INFO] Source: {source} ({w}x{h})")
+    print(f"[INFO] Model: {model_path}")
+    print(f"[INFO] Confidence: {conf} / NMS: {nms}")
     print("[INFO] Press 'q' to quit, 'r' to reset tracker, 'c' to toggle compensation")
 
     fps_avg = 0.0
@@ -113,9 +103,9 @@ def run(args):
         if motion_estimator is not None:
             coord_transform = motion_estimator.update(frame)
 
-        results = model(frame, conf=args.conf, verbose=False)[0]
+        results = model(frame, conf=conf, verbose=False)[0]
         detections = sv.Detections.from_ultralytics(results).with_nms(
-            threshold=args.nms,
+            threshold=nms,
         )
         detections = tracker.update(detections)
 
@@ -175,36 +165,5 @@ def run(args):
     print("[INFO] Done.")
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Real-time YOLO26 + ByteTrack tracking",
-    )
-    parser.add_argument(
-        "--source", default="0",
-        help="Video source: webcam index (0,1,...) or RTSP/file path",
-    )
-    parser.add_argument(
-        "--model", default=DEFAULT_MODEL,
-        help="Path to YOLO model weights",
-    )
-    parser.add_argument(
-        "--conf", type=float, default=0.2,
-        help="Detection confidence threshold",
-    )
-    parser.add_argument(
-        "--nms", type=float, default=0.3,
-        help="NMS IoU threshold",
-    )
-    parser.add_argument(
-        "--compensation", action="store_true",
-        help="Enable Camera Motion Compensation (for moving cameras)",
-    )
-    parser.add_argument(
-        "--min-frames", type=int, default=1,
-        help="Minimum consecutive frames before confirming a track",
-    )
-    return parser.parse_args()
-
-
 if __name__ == "__main__":
-    run(parse_args())
+    run()
