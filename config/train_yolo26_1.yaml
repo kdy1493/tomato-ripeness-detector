@@ -1,0 +1,160 @@
+# YOLO26 학습 설정 — tune_stage1 best_hyperparameters 반영
+# 사용법: python scripts/train_yolo26.py -c config/train_yolo26_1.yaml 2>&1 | tee runs/train_yolo26_1_$(date +%Y%m%d_%H%M).log
+# 출처: runs/yolo26_custom_tomato_tune/tune_stage1/best_hyperparameters.yaml (iter 10, fitness mAP50-95=0.77132)
+
+# =============================================================================
+# 실행 모드: train, tune, validate, predict, export
+# =============================================================================
+mode: train
+
+# =============================================================================
+# 모델 설정
+# =============================================================================
+model:
+  size: medium          # nano, small, medium, large, xlarge
+  task: detect        # detect, segment, pose, obb, classify
+  pretrained: true    # 사전학습 가중치 사용
+
+# =============================================================================
+# 학습 설정
+# =============================================================================
+train:
+  # --- 데이터셋 ---
+  data: data/custom_tomato_data_yolo/dataset.yaml
+
+  # --- 기본 학습 파라미터 ---
+  epochs: 100
+  imgsz: 640
+  batch: -1           # -1 = 자동 배치 크기 (튜닝과 동일 전략)
+  device: 6           # CUDA_VISIBLE_DEVICES로 GPU 지정
+  workers: 8
+  seed: 42            # 랜덤 시드 (재현성)
+
+  # --- 조기 종료 ---
+  patience: 30        # 개선 없으면 종료할 에폭 수
+
+  # --- 저장 설정 ---
+  save_period: 10     # 체크포인트 저장 주기
+  project: /home/dongyub/tomato-ripeness-detector/runs
+  name: yolo26_custom_tomato_tune1
+  exist_ok: true
+  resume: false     # 이전 학습 재개
+
+  # --- 옵티마이저 (튜닝 시 AdamW) ---
+  optimizer: AdamW
+  lr0: 0.00068
+  lrf: 0.06241
+  momentum: 0.82588
+  weight_decay: 0.00028
+  warmup_epochs: 1.95661
+
+  # --- 손실 가중치 ---
+  box: 7.5            # 박스 손실 가중치
+  cls: 0.5            # 분류 손실 가중치
+  dfl: 1.5            # DFL 손실 가중치
+
+  # --- 데이터 증강 ---
+  hsv_h: 0.015        # HSV 색상 증강
+  hsv_s: 0.7          # HSV 채도 증강
+  hsv_v: 0.4          # HSV 명도 증강
+  degrees: 0.0        # 회전 각도
+  translate: 0.1      # 이동
+  scale: 0.5          # 스케일
+  fliplr: 0.5         # 좌우 반전 확률
+  flipud: 0.0         # 상하 반전 확률
+  mosaic: 1.0         # 모자이크 증강
+  mixup: 0.0          # MixUp 증강
+  copy_paste: 0.0     # Copy-paste 증강
+  close_mosaic: 10    # 마지막 N 에폭에서 모자이크 끄기
+
+  # --- 기타 ---
+  amp: true           # 자동 혼합 정밀도 (FP16)
+  cache: false        # 이미지 캐싱
+
+# =============================================================================
+# 하이퍼파라미터 튜닝 설정
+# =============================================================================
+tune:
+  # --- 기본 설정 ---
+  data: data/custom_tomato_data_yolo/dataset.yaml
+  iterations: 100       # 튜닝 반복 횟수
+  epochs: 30            # 각 반복당 에폭 수
+  imgsz: 640
+  batch: 16
+  device: null
+  workers: 8
+  optimizer: AdamW
+  seed: 42
+
+  # --- 저장 설정 ---
+  project: /home/dongyub/tomato-ripeness-detector/runs/tune
+  name: null            # null = 자동 생성
+  exist_ok: true
+
+  # --- 튜닝 옵션 ---
+  plots: true           # 튜닝 결과 플롯 생성
+  save: false           # 각 반복마다 체크포인트 저장 (디스크 많이 씀)
+  val: false            # 각 반복마다 검증 수행 (시간 오래 걸림)
+
+  # --- Ray Tune (고급) ---
+  use_ray: false        # Ray Tune 사용 여부
+  gpu_per_trial: 1      # 트라이얼당 GPU 수
+  max_samples: 10       # 최대 샘플 수
+  grace_period: 10      # ASHA 스케줄러 grace period
+
+  # --- 탐색 공간 ---
+  # [min, max] 형식으로 지정
+  # 주석 처리된 파라미터는 기본값 사용
+  space:
+    lr0: [1e-5, 1e-1]           # 초기 학습률
+    lrf: [0.01, 1.0]            # 최종 학습률 비율
+    momentum: [0.6, 0.98]       # 모멘텀
+    weight_decay: [0.0, 0.001]  # 가중치 감소
+    box: [0.02, 0.2]            # 박스 손실 가중치
+    cls: [0.2, 4.0]             # 분류 손실 가중치
+    # warmup_epochs: [0.0, 5.0] # 워밍업 에폭
+    # hsv_h: [0.0, 0.1]         # HSV 색상
+    # hsv_s: [0.0, 0.9]         # HSV 채도
+    # hsv_v: [0.0, 0.9]         # HSV 명도
+    # degrees: [0.0, 45.0]      # 회전 각도
+    # translate: [0.0, 0.9]     # 이동
+    # scale: [0.0, 0.9]         # 스케일
+    # mosaic: [0.0, 1.0]        # 모자이크
+    # mixup: [0.0, 1.0]         # MixUp
+
+# =============================================================================
+# 검증 설정
+# =============================================================================
+validate:
+  data: data/custom_tomato_data_yolo/dataset.yaml
+  split: test           # val, test
+  imgsz: 640
+  batch: 16
+  conf: 0.001           # mAP 계산용 (낮게)
+  iou: 0.6
+  save_json: true       # COCO JSON 형식 저장
+  plots: true           # Confusion Matrix 등
+
+# =============================================================================
+# 추론 설정
+# =============================================================================
+predict:
+  source: data/custom_tomato_data_yolo/images/test
+  imgsz: 64
+  conf: 0.25            # 신뢰도 임계값
+  iou: 0.45             # NMS IoU 임계값
+  max_det: 300          # 이미지당 최대 검출 수
+  save: true            # 결과 이미지 저장
+  save_txt: false       # 결과 라벨 저장
+  save_conf: true       # 신뢰도 저장
+
+# =============================================================================
+# 모델 내보내기 설정
+# =============================================================================
+export:
+  format: onnx          # onnx, torchscript, tensorrt, coreml, tflite 등
+  imgsz: 640
+  half: false           # FP16
+  int8: false           # INT8 양자화
+  dynamic: false        # 동적 입력 크기 (ONNX)
+  simplify: true        # ONNX 단순화
