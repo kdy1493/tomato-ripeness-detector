@@ -31,7 +31,7 @@ class StableIdAssigner:
     """ByteTrack ID와 무관하게 화면 이탈 후에도 동일한 표시 ID를 유지.
 
     - 연속 프레임: 같은 클래스 + IoU
-    - 재등장: HSV 히스토그램 상관
+    - 재등장: HSV 히스토그램 상관 (옵션: 화면상 bbox 중심 거리 가중, 고정 카메라에 유리)
     """
 
     def __init__(
@@ -41,12 +41,26 @@ class StableIdAssigner:
         hist_match_thresh: float = 0.62,
         hist_margin: float = 0.06,
         hist_ema: float = 0.35,
+        use_position_score: bool = True,
+        position_sigma_px: float = 200.0,
+        combined_hist_weight: float = 0.65,
+        combined_match_thresh: float = 0.55,
     ) -> None:
         self.lost_ttl_frames = lost_ttl_frames
         self.iou_match_thresh = iou_match_thresh
         self.hist_match_thresh = hist_match_thresh
         self.hist_margin = hist_margin
         self.hist_ema = hist_ema
+        self.use_position_score = use_position_score
+        self.position_sigma_px = max(1e-3, position_sigma_px)
+        wh = float(combined_hist_weight)
+        self._hist_w = wh
+        self._pos_w = max(0.0, min(1.0, 1.0 - wh))
+        s = self._hist_w + self._pos_w
+        if s > 1e-6:
+            self._hist_w /= s
+            self._pos_w /= s
+        self.combined_match_thresh = combined_match_thresh
         self._next_stable_id = 1
         self._prev: List[_TrackState] = []
         self._lost: List[dict] = []
@@ -80,6 +94,18 @@ class StableIdAssigner:
     def _iou(a: np.ndarray, b: np.ndarray) -> float:
         return float(sv.box_iou_batch(a.reshape(1, 4), b.reshape(1, 4))[0, 0])
 
+    @staticmethod
+    def _position_score(
+        lost_xyxy: np.ndarray, cur_xyxy: np.ndarray, sigma_px: float,
+    ) -> float:
+        """중심점 거리 기반 0~1. sigma_px에서 0에 가깝게."""
+        lax = 0.5 * (float(lost_xyxy[0]) + float(lost_xyxy[2]))
+        lay = 0.5 * (float(lost_xyxy[1]) + float(lost_xyxy[3]))
+        cax = 0.5 * (float(cur_xyxy[0]) + float(cur_xyxy[2]))
+        cay = 0.5 * (float(cur_xyxy[1]) + float(cur_xyxy[3]))
+        dist = float(np.hypot(lax - cax, lay - cay))
+        return max(0.0, 1.0 - dist / sigma_px)
+
     def assign(self, frame_idx: int, frame: np.ndarray, d: sv.Detections) -> np.ndarray:
         n = len(d)
         if n == 0:
@@ -88,6 +114,7 @@ class StableIdAssigner:
                     "stable_id": p.stable_id,
                     "class_id": p.class_id,
                     "hist": p.hist,
+                    "last_xyxy": p.xyxy.copy(),
                     "deadline": frame_idx + self.lost_ttl_frames,
                 })
             self._prev = []
@@ -123,10 +150,17 @@ class StableIdAssigner:
                     "stable_id": p.stable_id,
                     "class_id": p.class_id,
                     "hist": p.hist,
+                    "last_xyxy": p.xyxy.copy(),
                     "deadline": frame_idx + self.lost_ttl_frames,
                 })
 
         self._lost = [x for x in self._lost if x["deadline"] > frame_idx]
+
+        match_thresh = (
+            self.combined_match_thresh
+            if self.use_position_score
+            else self.hist_match_thresh
+        )
 
         for j in range(n):
             if stable[j] != -1:
@@ -144,7 +178,14 @@ class StableIdAssigner:
                 lh = L["hist"]
                 if lh is None:
                     continue
-                s = float(cv2.compareHist(hj, lh, cv2.HISTCMP_CORREL))
+                hist_s = max(0.0, float(cv2.compareHist(hj, lh, cv2.HISTCMP_CORREL)))
+                if self.use_position_score:
+                    pos_s = self._position_score(
+                        L["last_xyxy"], xyxy[j], self.position_sigma_px,
+                    )
+                    s = self._hist_w * hist_s + self._pos_w * pos_s
+                else:
+                    s = hist_s
                 if s > best_s:
                     second_s = best_s
                     best_s = s
@@ -153,7 +194,7 @@ class StableIdAssigner:
                     second_s = s
             if (
                 best_k >= 0
-                and best_s >= self.hist_match_thresh
+                and best_s >= match_thresh
                 and (best_s - second_s) >= self.hist_margin
             ):
                 L = self._lost.pop(best_k)
@@ -228,7 +269,9 @@ def build_motion_compensator():
 
 def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
         compensation=False, min_frames=1, stable_ids=True,
-        lost_ttl_frames=900, byte_lost_buffer=120, hist_match_thresh=0.62):
+        lost_ttl_frames=900, byte_lost_buffer=120, hist_match_thresh=0.62,
+        use_position_reid: bool = True, position_sigma_px: float = 200.0,
+        combined_hist_weight: float = 0.65, combined_match_thresh: float = 0.55):
     """Run real-time tracking loop.
 
     Args:
@@ -241,7 +284,11 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
         stable_ids: If True, keep display IDs after leave/re-enter (IoU + HSV hist).
         lost_ttl_frames: How long (frames) to remember IDs for re-match.
         byte_lost_buffer: ByteTrack internal buffer (longer = better short occlusion).
-        hist_match_thresh: HSV histogram correlation threshold for re-match.
+        hist_match_thresh: HSV-only re-match threshold (when use_position_reid False).
+        use_position_reid: Blend bbox center distance with hist (good for fixed camera).
+        position_sigma_px: Distance at which position score nears 0.
+        combined_hist_weight: Weight of hist in combined score (rest is position).
+        combined_match_thresh: Min combined score when use_position_reid True.
     """
     model = YOLO(model_path)
     vid_source = int(source) if isinstance(source, str) and source.isdigit() else source
@@ -259,6 +306,10 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
     id_assigner = StableIdAssigner(
         lost_ttl_frames=lost_ttl_frames,
         hist_match_thresh=hist_match_thresh,
+        use_position_score=use_position_reid,
+        position_sigma_px=position_sigma_px,
+        combined_hist_weight=combined_hist_weight,
+        combined_match_thresh=combined_match_thresh,
     ) if stable_ids else None
     box_ann, label_ann, trace_ann = build_annotators()
 
@@ -276,10 +327,17 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
     print(f"[INFO] Model: {model_path}")
     print(f"[INFO] Confidence: {conf} / NMS: {nms}")
     if id_assigner is not None:
-        print(
-            f"[INFO] Stable IDs ON (HSV), ttl~{lost_ttl_frames}f, "
-            f"corr>={hist_match_thresh}",
-        )
+        if use_position_reid:
+            print(
+                f"[INFO] Stable IDs ON (HSV+pos), ttl~{lost_ttl_frames}f, "
+                f"combined>={combined_match_thresh}, "
+                f"hist_w={combined_hist_weight:.2f}, sigma={position_sigma_px}px",
+            )
+        else:
+            print(
+                f"[INFO] Stable IDs ON (HSV only), ttl~{lost_ttl_frames}f, "
+                f"corr>={hist_match_thresh}",
+            )
     else:
         print("[INFO] Stable IDs OFF (ByteTrack IDs only)")
     print("[INFO] Press 'q' to quit, 'r' to reset tracker, 'c' to toggle compensation")
