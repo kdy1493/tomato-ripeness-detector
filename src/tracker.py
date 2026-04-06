@@ -44,22 +44,23 @@ class StableIdAssigner:
     def __init__(
         self,
         lost_ttl_frames: int = 900,
-        iou_match_thresh: float = 0.12,
-        hist_match_thresh: float = 0.62,
-        hist_margin: float = 0.06,
+        iou_match_thresh: float = 0.08,  # 0.12→0.08: 더 낮은 IoU도 매칭
+        hist_match_thresh: float = 0.55,  # 0.62→0.55: HSV 매칭 완화
+        hist_margin: float = 0.04,  # 0.06→0.04: 마진 완화
         hist_ema: float = 0.35,
         use_position_score: bool = True,
-        position_sigma_px: float = 200.0,
-        combined_hist_weight: float = 0.65,
-        combined_match_thresh: float = 0.55,
-        center_match_max_px: float = 130.0,
-        recent_reid_max_frames: int = 40,
-        recent_reid_max_center_dist_px: float = 180.0,
-        recent_reid_min_hist: float = 0.42,
-        gap_position_only_frames: int = 55,
-        gap_position_only_max_px: float = 95.0,
-        gap_position_extra_per_frame: float = 11.0,
-        gap_position_only_cap_px: float = 320.0,
+        position_sigma_px: float = 250.0,  # 200→250: 위치 점수 범위 확대
+        combined_hist_weight: float = 0.55,  # 0.65→0.55: 위치 비중 높임
+        combined_match_thresh: float = 0.45,  # 0.55→0.45: 결합 threshold 완화
+        center_match_max_px: float = 200.0,  # 130→200: 중심 거리 매칭 범위 확대
+        recent_reid_max_frames: int = 60,  # 40→60: 더 오래 Re-ID 시도
+        recent_reid_max_center_dist_px: float = 280.0,  # 180→280: Re-ID 거리 확대
+        recent_reid_min_hist: float = 0.32,  # 0.42→0.32: Re-ID HSV threshold 완화
+        gap_position_only_frames: int = 80,  # 55→80: 위치만으로 매칭하는 프레임 확대
+        gap_position_only_max_px: float = 150.0,  # 95→150: 위치 매칭 범위 확대
+        gap_position_extra_per_frame: float = 15.0,  # 11→15: 프레임당 추가 거리
+        gap_position_only_cap_px: float = 400.0,  # 320→400: 최대 거리 확대
+        debug: bool = False,  # 디버그 모드
     ) -> None:
         self.lost_ttl_frames = lost_ttl_frames
         self.iou_match_thresh = iou_match_thresh
@@ -89,6 +90,7 @@ class StableIdAssigner:
         self._next_id_by_class: Dict[int, int] = {}
         self._prev: List[_TrackState] = []
         self._lost: List[dict] = []
+        self.debug = debug
 
     def config_log_line(self) -> str:
         return (
@@ -402,7 +404,24 @@ class StableIdAssigner:
                 need_new_by_class[cid],
                 key=lambda jj: self._top_right_to_bottom_left_key(xyxy[jj]),
             ):
-                stable[j] = self._new_id(cid)
+                new_id = self._new_id(cid)
+                stable[j] = new_id
+                if self.debug:
+                    cx = 0.5 * (float(xyxy[j][0]) + float(xyxy[j][2]))
+                    cy = 0.5 * (float(xyxy[j][1]) + float(xyxy[j][3]))
+                    cls_name = CLASS_NAMES.get(cid, "?")
+                    # 최근 lost에서 같은 클래스 찾아보기
+                    nearby_lost = []
+                    for L in self._lost:
+                        if L["class_id"] == cid:
+                            lx = 0.5 * (float(L["last_xyxy"][0]) + float(L["last_xyxy"][2]))
+                            ly = 0.5 * (float(L["last_xyxy"][1]) + float(L["last_xyxy"][3]))
+                            dist = np.hypot(cx - lx, cy - ly)
+                            age = frame_idx - L.get("lost_at", 0)
+                            nearby_lost.append((dist, L["stable_id"], age))
+                    nearby_lost.sort(key=lambda x: x[0])
+                    lost_info = ", ".join([f"#{sid}({d:.0f}px,{a}f)" for d, sid, a in nearby_lost[:3]]) or "none"
+                    print(f"[DEBUG] NEW ID: {cls_name} #{new_id} at ({cx:.0f},{cy:.0f}) | nearby_lost: {lost_info}")
 
         new_prev: List[_TrackState] = []
         for j in range(n):
@@ -485,15 +504,16 @@ def _roi_inclusive_bounds(
     return (x1, y1, x2, y2)
 
 
-def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
+def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.5, nms=0.3,
         compensation=False, min_frames=1, stable_ids=True,
-        lost_ttl_frames=900, byte_lost_buffer=120, hist_match_thresh=0.62,
-        use_position_reid: bool = True, position_sigma_px: float = 200.0,
-        combined_hist_weight: float = 0.65, combined_match_thresh: float = 0.55,
+        lost_ttl_frames=900, byte_lost_buffer=300, hist_match_thresh=0.40,
+        use_position_reid: bool = True, position_sigma_px: float = 400.0,
+        combined_hist_weight: float = 0.40, combined_match_thresh: float = 0.30,
         output_path: Optional[str] = None, show_window: bool = True,
         roi_half_width: Optional[int] = None,
         count_roi_entries: bool = True,
-        roi_count_use_stable_id: bool = False):
+        roi_count_use_stable_id: bool = False,
+        debug: bool = False):
     """Run real-time tracking loop.
 
     Args:
@@ -536,16 +556,30 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
         lost_track_buffer=byte_lost_buffer,
         frame_rate=fps_hint,
     )
+    # 모든 파라미터를 명시적으로 전달
     id_assigner = StableIdAssigner(
         lost_ttl_frames=lost_ttl_frames,
+        iou_match_thresh=0.05,
         hist_match_thresh=hist_match_thresh,
+        hist_margin=0.02,
         use_position_score=use_position_reid,
         position_sigma_px=position_sigma_px,
         combined_hist_weight=combined_hist_weight,
         combined_match_thresh=combined_match_thresh,
+        center_match_max_px=500.0,
+        recent_reid_max_frames=120,
+        recent_reid_max_center_dist_px=800.0,
+        recent_reid_min_hist=0.25,
+        gap_position_only_frames=150,
+        gap_position_only_max_px=600.0,
+        gap_position_extra_per_frame=20.0,
+        gap_position_only_cap_px=1000.0,
+        debug=debug,
     ) if stable_ids else None
     if id_assigner is not None:
         print(id_assigner.config_log_line())
+        if debug:
+            print("[INFO] Debug mode ON - will print ID assignment details")
     box_ann, label_ann, trace_ann = build_annotators()
 
     motion_estimator = None

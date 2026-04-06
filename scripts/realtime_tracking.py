@@ -73,6 +73,11 @@ def main():
         action="store_true",
         help="ROI 누적 카운트를 stable 표시 번호 기준으로 (기본: ByteTrack, 비슷한 자리 다른 토마토 구분에 유리)",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="디버그 모드: 새 ID 부여 시 nearby lost 정보 출력",
+    )
     args = parser.parse_args()
     if args.headless and not args.out:
         parser.error("--headless 는 --out 과 함께 사용하세요 (저장 없이 창만 끄려면 생략).")
@@ -96,6 +101,7 @@ def main():
         roi_half_width=args.roi_half_width,
         count_roi_entries=not args.no_roi_count,
         roi_count_use_stable_id=args.roi_count_stable_id,
+        debug=args.debug,
     )
     if args.model is not None:
         kwargs["model_path"] = args.model
