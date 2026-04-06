@@ -33,6 +33,7 @@ class StableIdAssigner:
 
     - 연속 프레임: 같은 클래스 + IoU
     - 재등장: HSV 히스토그램 상관 (옵션: 화면상 bbox 중심 거리 가중, 고정 카메라에 유리)
+    - 표시 ID는 클래스마다 1부터 따로 증가 (ripe #1 과 unripe #1 동시 존재 가능).
     """
 
     def __init__(
@@ -62,19 +63,19 @@ class StableIdAssigner:
             self._hist_w /= s
             self._pos_w /= s
         self.combined_match_thresh = combined_match_thresh
-        self._next_stable_id = 1
+        self._next_id_by_class: Dict[int, int] = {}
         self._prev: List[_TrackState] = []
         self._lost: List[dict] = []
 
     def reset(self) -> None:
-        self._next_stable_id = 1
+        self._next_id_by_class.clear()
         self._prev = []
         self._lost = []
 
-    def _new_id(self) -> int:
-        sid = self._next_stable_id
-        self._next_stable_id += 1
-        return sid
+    def _new_id(self, class_id: int) -> int:
+        n = self._next_id_by_class.get(class_id, 1)
+        self._next_id_by_class[class_id] = n + 1
+        return n
 
     @staticmethod
     def _bbox_hist(frame: np.ndarray, xyxy: np.ndarray) -> Optional[np.ndarray]:
@@ -168,7 +169,7 @@ class StableIdAssigner:
                 continue
             hj = hists[j]
             if hj is None:
-                stable[j] = self._new_id()
+                stable[j] = self._new_id(int(classes[j]))
                 continue
             best_k = -1
             best_s = -1.0
@@ -201,14 +202,15 @@ class StableIdAssigner:
                 L = self._lost.pop(best_k)
                 stable[j] = int(L["stable_id"])
             else:
-                stable[j] = self._new_id()
+                stable[j] = self._new_id(int(classes[j]))
 
         new_prev: List[_TrackState] = []
         for j in range(n):
             sid = int(stable[j])
+            cid = int(classes[j])
             old_hist = None
             for p in self._prev:
-                if p.stable_id == sid:
+                if p.stable_id == sid and p.class_id == cid:
                     old_hist = p.hist
                     break
             hj = hists[j]
@@ -314,7 +316,8 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
             half-width n px each side (inclusive span ~2n+1). None = full frame.
         count_roi_entries: If True and ROI is active, increment class counts when a
             stable ID first enters the strip from the left outside (x < x1) or right
-            outside (x > x2); each ID counts at most once until tracker reset.
+            outside (x > x2); each (class, id) counts at most once until reset
+            (ripe/unripe id 번호는 각각 따로 증가).
     """
     model = YOLO(model_path)
     vid_source = int(source) if isinstance(source, str) and source.isdigit() else source
@@ -362,8 +365,8 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
         )
         if do_count:
             print(
-                "[INFO] Entry count: left edge (x<ROI) or right edge (x>ROI) "
-                "→ inside; once per stable ID (--no-stable-id면 ByteTrack id).",
+                "[INFO] Entry count: left/right outside → inside; "
+                "once per (class, id); ripe/unripe id는 각각 1부터 (--no-stable-id면 ByteTrack id).",
             )
         elif not count_roi_entries:
             print("[INFO] ROI entry counting OFF (--no-roi-count).")
@@ -408,9 +411,9 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
     frame_idx = 0
     count_ripe = 0
     count_unripe = 0
-    counted_ids: set[int] = set()
-    arm_left: Dict[int, bool] = {}
-    arm_right: Dict[int, bool] = {}
+    counted_keys: set[Tuple[int, int]] = set()
+    arm_left: Dict[Tuple[int, int], bool] = {}
+    arm_right: Dict[Tuple[int, int], bool] = {}
 
     while True:
         t0 = time.perf_counter()
@@ -463,31 +466,32 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
                 sid = int(detections.tracker_id[i])
                 if sid < 0:
                     continue
-                if sid in counted_ids:
-                    continue
                 cls = int(detections.class_id[i])
                 if cls not in CLASS_NAMES:
+                    continue
+                ck = (cls, sid)
+                if ck in counted_keys:
                     continue
                 x1b, _, x2b, _ = detections.xyxy[i]
                 cx = 0.5 * (float(x1b) + float(x2b))
                 if cx < float(rx1):
-                    arm_left[sid] = True
+                    arm_left[ck] = True
                 elif cx > float(rx2):
-                    arm_right[sid] = True
+                    arm_right[ck] = True
                 elif float(rx1) <= cx <= float(rx2):
                     via = None
-                    if arm_left.get(sid):
+                    if arm_left.get(ck):
                         via = "left"
-                    elif arm_right.get(sid):
+                    elif arm_right.get(ck):
                         via = "right"
                     if via is not None:
                         if cls == 0:
                             count_ripe += 1
                         else:
                             count_unripe += 1
-                        counted_ids.add(sid)
+                        counted_keys.add(ck)
                         print(
-                            f"[COUNT] id={sid} class={CLASS_NAMES[cls]} "
+                            f"[COUNT] {CLASS_NAMES[cls]} #{sid} "
                             f"via={via} edge | total ripe={count_ripe} unripe={count_unripe}",
                         )
 
@@ -556,7 +560,7 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
                 id_assigner.reset()
             if motion_estimator is not None:
                 motion_estimator.reset()
-            counted_ids.clear()
+            counted_keys.clear()
             arm_left.clear()
             arm_right.clear()
             count_ripe = 0
