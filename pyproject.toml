@@ -5,6 +5,7 @@ description = "YOLO26 기반 스마트팜 객체 감지 프로젝트"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "scipy>=1.11.0",
     "ultralytics>=8.3.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",

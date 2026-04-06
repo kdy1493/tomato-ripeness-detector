@@ -10,6 +10,7 @@ YOLO26 + ByteTrack 실시간 트래킹 실행 스크립트.
     python scripts/realtime_tracking.py --source notebook/rgb.mp4 --out runs/out.mp4 --headless
     python scripts/realtime_tracking.py --source vid.mp4 --roi-half-width 320
     python scripts/realtime_tracking.py --source vid.mp4 --roi-half-width 320 --no-roi-count
+    python scripts/realtime_tracking.py --source vid.mp4 --roi-half-width 320 --roi-count-stable-id
 """
 
 import sys
@@ -67,6 +68,11 @@ def main():
         action="store_true",
         help="ROI 검출만 하고 ROI 좌/우 입구 기준 누적 카운트는 끔",
     )
+    parser.add_argument(
+        "--roi-count-stable-id",
+        action="store_true",
+        help="ROI 누적 카운트를 stable 표시 번호 기준으로 (기본: ByteTrack, 비슷한 자리 다른 토마토 구분에 유리)",
+    )
     args = parser.parse_args()
     if args.headless and not args.out:
         parser.error("--headless 는 --out 과 함께 사용하세요 (저장 없이 창만 끄려면 생략).")
@@ -89,6 +95,7 @@ def main():
         show_window=not args.headless,
         roi_half_width=args.roi_half_width,
         count_roi_entries=not args.no_roi_count,
+        roi_count_use_stable_id=args.roi_count_stable_id,
     )
     if args.model is not None:
         kwargs["model_path"] = args.model

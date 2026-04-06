@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 import supervision as sv
+from scipy.optimize import linear_sum_assignment
 from ultralytics import YOLO
 from trackers import ByteTrackTracker
 
@@ -18,6 +19,9 @@ CLASS_COLORS = sv.ColorPalette.from_hex([
 ])
 
 DEFAULT_MODEL = r"runs\yolo26_custom_tomato\trained_yolo26_custom.pt"
+
+# 터미널에서 새 로직 적용 여부 확인용 (스크립트 시작 시 출력)
+STABLE_ID_LOGIC_TAG = "hungarian+global-gap+reid-relax"
 
 
 @dataclass
@@ -31,15 +35,16 @@ class _TrackState:
 class StableIdAssigner:
     """ByteTrack ID와 무관하게 화면 이탈 후에도 동일한 표시 ID를 유지.
 
-    - 연속 프레임: 같은 클래스 + IoU
+    - 연속 프레임: 클래스별 IoU 1:1 최적 매칭(헝가리안) + IoU 부족 시 가까운 중심거리 보조
     - 재등장: HSV 히스토그램 상관 (옵션: 화면상 bbox 중심 거리 가중, 고정 카메라에 유리)
     - 표시 ID는 클래스마다 1부터 따로 증가 (ripe #1 과 unripe #1 동시 존재 가능).
+    - 같은 프레임에서 새로 발급하는 번호만, 클래스별 우상단→좌하단(위→아래, 같은 줄은 오→왼) 순으로 부여.
     """
 
     def __init__(
         self,
         lost_ttl_frames: int = 900,
-        iou_match_thresh: float = 0.2,
+        iou_match_thresh: float = 0.12,
         hist_match_thresh: float = 0.62,
         hist_margin: float = 0.06,
         hist_ema: float = 0.35,
@@ -47,6 +52,14 @@ class StableIdAssigner:
         position_sigma_px: float = 200.0,
         combined_hist_weight: float = 0.65,
         combined_match_thresh: float = 0.55,
+        center_match_max_px: float = 130.0,
+        recent_reid_max_frames: int = 40,
+        recent_reid_max_center_dist_px: float = 180.0,
+        recent_reid_min_hist: float = 0.42,
+        gap_position_only_frames: int = 55,
+        gap_position_only_max_px: float = 95.0,
+        gap_position_extra_per_frame: float = 11.0,
+        gap_position_only_cap_px: float = 320.0,
     ) -> None:
         self.lost_ttl_frames = lost_ttl_frames
         self.iou_match_thresh = iou_match_thresh
@@ -55,6 +68,16 @@ class StableIdAssigner:
         self.hist_ema = hist_ema
         self.use_position_score = use_position_score
         self.position_sigma_px = max(1e-3, position_sigma_px)
+        self.center_match_max_px = max(1e-3, center_match_max_px)
+        self.recent_reid_max_frames = max(1, int(recent_reid_max_frames))
+        self.recent_reid_max_center_dist_px = max(1e-3, recent_reid_max_center_dist_px)
+        self.recent_reid_min_hist = recent_reid_min_hist
+        self.gap_position_only_frames = max(1, int(gap_position_only_frames))
+        self.gap_position_only_max_px = max(1e-3, gap_position_only_max_px)
+        self.gap_position_extra_per_frame = max(0.0, gap_position_extra_per_frame)
+        self.gap_position_only_cap_px = max(
+            self.gap_position_only_max_px, gap_position_only_cap_px,
+        )
         wh = float(combined_hist_weight)
         self._hist_w = wh
         self._pos_w = max(0.0, min(1.0, 1.0 - wh))
@@ -66,6 +89,14 @@ class StableIdAssigner:
         self._next_id_by_class: Dict[int, int] = {}
         self._prev: List[_TrackState] = []
         self._lost: List[dict] = []
+
+    def config_log_line(self) -> str:
+        return (
+            f"[INFO] {STABLE_ID_LOGIC_TAG}: IoU≥{self.iou_match_thresh}, "
+            f"prev-center≤{self.center_match_max_px}px, "
+            f"gap≤{self.gap_position_only_frames}f base≤{self.gap_position_only_max_px}px "
+            f"+{self.gap_position_extra_per_frame}/f cap{self.gap_position_only_cap_px}px"
+        )
 
     def reset(self) -> None:
         self._next_id_by_class.clear()
@@ -97,6 +128,135 @@ class StableIdAssigner:
         return float(sv.box_iou_batch(a.reshape(1, 4), b.reshape(1, 4))[0, 0])
 
     @staticmethod
+    def _center_dist(a_xyxy: np.ndarray, b_xyxy: np.ndarray) -> float:
+        ax = 0.5 * (float(a_xyxy[0]) + float(a_xyxy[2]))
+        ay = 0.5 * (float(a_xyxy[1]) + float(a_xyxy[3]))
+        bx = 0.5 * (float(b_xyxy[0]) + float(b_xyxy[2]))
+        by = 0.5 * (float(b_xyxy[1]) + float(b_xyxy[3]))
+        return float(np.hypot(ax - bx, ay - by))
+
+    def _match_prev_iou_hungarian(
+        self,
+        n: int,
+        xyxy: np.ndarray,
+        classes: np.ndarray,
+        stable: np.ndarray,
+        matched_prev_idx: set[int],
+    ) -> None:
+        """클래스별로 IoU 합이 최대가 되도록 1:1 매칭 (가까이 붙은 토마토 ID 뒤바뀜 완화)."""
+        class_ids = {int(c) for c in classes}
+        class_ids |= {p.class_id for p in self._prev}
+        for c in sorted(class_ids):
+            p_idxs = [pi for pi, p in enumerate(self._prev) if p.class_id == c]
+            j_idxs = [j for j in range(n) if int(classes[j]) == c]
+            if not p_idxs or not j_idxs:
+                continue
+            n_p, n_j = len(p_idxs), len(j_idxs)
+            cost = np.ones((n_p, n_j), dtype=np.float64)
+            iou_mat = np.zeros((n_p, n_j), dtype=np.float64)
+            for ii, pi in enumerate(p_idxs):
+                for jj, j in enumerate(j_idxs):
+                    iou_v = self._iou(self._prev[pi].xyxy, xyxy[j])
+                    iou_mat[ii, jj] = iou_v
+                    cost[ii, jj] = 1.0 - iou_v
+            ri, ci = linear_sum_assignment(cost)
+            for ii, jj in zip(ri, ci):
+                if iou_mat[ii, jj] < self.iou_match_thresh:
+                    continue
+                j, pi = j_idxs[jj], p_idxs[ii]
+                if stable[j] != -1:
+                    continue
+                stable[j] = self._prev[pi].stable_id
+                matched_prev_idx.add(pi)
+
+    def _match_prev_center_fallback(
+        self,
+        n: int,
+        xyxy: np.ndarray,
+        classes: np.ndarray,
+        stable: np.ndarray,
+        matched_prev_idx: set[int],
+    ) -> None:
+        """짧은 프레임에서 박스가 튀어 IoU만으로는 실패할 때, 같은 클래스·가까운 중심으로 1:1 보강."""
+        pairs: List[Tuple[float, int, int]] = []
+        for pi, p in enumerate(self._prev):
+            if pi in matched_prev_idx:
+                continue
+            for j in range(n):
+                if stable[j] != -1:
+                    continue
+                if int(classes[j]) != p.class_id:
+                    continue
+                d = self._center_dist(p.xyxy, xyxy[j])
+                if d <= self.center_match_max_px:
+                    pairs.append((d, pi, j))
+        pairs.sort(key=lambda t: t[0])
+        used_p: set[int] = set()
+        used_j: set[int] = set()
+        for d, pi, j in pairs:
+            if pi in used_p or j in used_j:
+                continue
+            used_p.add(pi)
+            used_j.add(j)
+            stable[j] = self._prev[pi].stable_id
+            matched_prev_idx.add(pi)
+
+    def _fill_gap_position_matches(
+        self,
+        xyxy: np.ndarray,
+        classes: np.ndarray,
+        stable: np.ndarray,
+        frame_idx: int,
+        gap_candidates: List[int],
+    ) -> None:
+        """lost(최근 것 우선) ↔ 미매칭 검출을 거리 기준으로 전역 1:1 (검출 루프 순서로 #5를 #9에 뺏기지 않게)."""
+        if not self._lost or not gap_candidates:
+            return
+        lost_order = sorted(
+            range(len(self._lost)),
+            key=lambda kk: -int(self._lost[kk].get("lost_at", -10**9)),
+        )
+        used_j: set[int] = set()
+        remove_k: List[int] = []
+        for k in lost_order:
+            L = self._lost[k]
+            lost_at = int(L.get("lost_at", -10**9))
+            age = frame_idx - lost_at
+            if age > self.gap_position_only_frames:
+                continue
+            max_d = min(
+                self.gap_position_only_cap_px,
+                self.gap_position_only_max_px
+                + self.gap_position_extra_per_frame * max(0, age),
+            )
+            cid_l = int(L["class_id"])
+            best_j = -1
+            best_d = float("inf")
+            for j in gap_candidates:
+                if j in used_j or int(stable[j]) != -1:
+                    continue
+                if int(classes[j]) != cid_l:
+                    continue
+                dist = self._center_dist(L["last_xyxy"], xyxy[j])
+                if dist <= max_d and dist < best_d:
+                    best_d = dist
+                    best_j = j
+            if best_j >= 0:
+                stable[best_j] = int(L["stable_id"])
+                used_j.add(best_j)
+                remove_k.append(k)
+        for k in sorted(remove_k, reverse=True):
+            self._lost.pop(k)
+
+    @staticmethod
+    def _top_right_to_bottom_left_key(xy: np.ndarray) -> Tuple[float, float]:
+        """Sort key: upper rows first (smaller y), then right to left (larger x first)."""
+        x1, y1, x2, y2 = float(xy[0]), float(xy[1]), float(xy[2]), float(xy[3])
+        cx = 0.5 * (x1 + x2)
+        cy = 0.5 * (y1 + y2)
+        return (cy, -cx)
+
+    @staticmethod
     def _position_score(
         lost_xyxy: np.ndarray, cur_xyxy: np.ndarray, sigma_px: float,
     ) -> float:
@@ -118,6 +278,7 @@ class StableIdAssigner:
                     "hist": p.hist,
                     "last_xyxy": p.xyxy.copy(),
                     "deadline": frame_idx + self.lost_ttl_frames,
+                    "lost_at": frame_idx,
                 })
             self._prev = []
             self._lost = [x for x in self._lost if x["deadline"] > frame_idx]
@@ -129,22 +290,12 @@ class StableIdAssigner:
 
         stable = np.full(n, -1, dtype=np.int32)
         matched_prev_idx: set[int] = set()
-
-        for pi, p in enumerate(self._prev):
-            best_j = -1
-            best_iou = 0.0
-            for j in range(n):
-                if stable[j] != -1:
-                    continue
-                if int(classes[j]) != p.class_id:
-                    continue
-                iou = self._iou(p.xyxy, xyxy[j])
-                if iou > best_iou:
-                    best_iou = iou
-                    best_j = j
-            if best_j >= 0 and best_iou >= self.iou_match_thresh:
-                stable[best_j] = p.stable_id
-                matched_prev_idx.add(pi)
+        self._match_prev_iou_hungarian(
+            n, xyxy, classes, stable, matched_prev_idx,
+        )
+        self._match_prev_center_fallback(
+            n, xyxy, classes, stable, matched_prev_idx,
+        )
 
         for pi, p in enumerate(self._prev):
             if pi not in matched_prev_idx:
@@ -154,6 +305,7 @@ class StableIdAssigner:
                     "hist": p.hist,
                     "last_xyxy": p.xyxy.copy(),
                     "deadline": frame_idx + self.lost_ttl_frames,
+                    "lost_at": frame_idx,
                 })
 
         self._lost = [x for x in self._lost if x["deadline"] > frame_idx]
@@ -164,12 +316,14 @@ class StableIdAssigner:
             else self.hist_match_thresh
         )
 
+        gap_candidates: List[int] = []
+        need_new_by_class: Dict[int, List[int]] = {}
         for j in range(n):
             if stable[j] != -1:
                 continue
             hj = hists[j]
             if hj is None:
-                stable[j] = self._new_id(int(classes[j]))
+                gap_candidates.append(j)
                 continue
             best_k = -1
             best_s = -1.0
@@ -202,7 +356,53 @@ class StableIdAssigner:
                 L = self._lost.pop(best_k)
                 stable[j] = int(L["stable_id"])
             else:
-                stable[j] = self._new_id(int(classes[j]))
+                rk = -1
+                rs = -1.0
+                for k, L in enumerate(self._lost):
+                    if L["class_id"] != int(classes[j]):
+                        continue
+                    lh = L["hist"]
+                    if lh is None:
+                        continue
+                    lost_at = int(L.get("lost_at", -10**9))
+                    if frame_idx - lost_at > self.recent_reid_max_frames:
+                        continue
+                    dist = self._center_dist(L["last_xyxy"], xyxy[j])
+                    if dist > self.recent_reid_max_center_dist_px:
+                        continue
+                    hist_s = max(0.0, float(cv2.compareHist(hj, lh, cv2.HISTCMP_CORREL)))
+                    if hist_s < self.recent_reid_min_hist:
+                        continue
+                    if self.use_position_score:
+                        pos_s = self._position_score(
+                            L["last_xyxy"], xyxy[j], self.position_sigma_px,
+                        )
+                        s = self._hist_w * hist_s + self._pos_w * pos_s
+                    else:
+                        s = hist_s
+                    if s > rs:
+                        rs = s
+                        rk = k
+                if rk >= 0 and rs >= self.combined_match_thresh * 0.82:
+                    L = self._lost.pop(rk)
+                    stable[j] = int(L["stable_id"])
+                else:
+                    gap_candidates.append(j)
+
+        self._fill_gap_position_matches(xyxy, classes, stable, frame_idx, gap_candidates)
+
+        for j in gap_candidates:
+            if int(stable[j]) != -1:
+                continue
+            cid = int(classes[j])
+            need_new_by_class.setdefault(cid, []).append(j)
+
+        for cid in sorted(need_new_by_class.keys()):
+            for j in sorted(
+                need_new_by_class[cid],
+                key=lambda jj: self._top_right_to_bottom_left_key(xyxy[jj]),
+            ):
+                stable[j] = self._new_id(cid)
 
         new_prev: List[_TrackState] = []
         for j in range(n):
@@ -292,7 +492,8 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
         combined_hist_weight: float = 0.65, combined_match_thresh: float = 0.55,
         output_path: Optional[str] = None, show_window: bool = True,
         roi_half_width: Optional[int] = None,
-        count_roi_entries: bool = True):
+        count_roi_entries: bool = True,
+        roi_count_use_stable_id: bool = False):
     """Run real-time tracking loop.
 
     Args:
@@ -315,9 +516,12 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
         roi_half_width: If set, detect only on a full-height strip centered on the frame,
             half-width n px each side (inclusive span ~2n+1). None = full frame.
         count_roi_entries: If True and ROI is active, increment class counts when a
-            stable ID first enters the strip from the left outside (x < x1) or right
-            outside (x > x2); each (class, id) counts at most once until reset
-            (ripe/unripe id 번호는 각각 따로 증가).
+            track first enters the strip from the left outside (x < x1) or right
+            outside (x > x2); each (class, id) counts at most once until reset.
+        roi_count_use_stable_id: If False (default), ROI count keys use ByteTrack IDs
+            (new track after dropout = new count). Safer when similar tomatoes occupy
+            the same slot and stable re-ID would merge them. If True, count keys use
+            stable display IDs (legacy; can under-count after false re-ID merge).
     """
     model = YOLO(model_path)
     vid_source = int(source) if isinstance(source, str) and source.isdigit() else source
@@ -340,6 +544,8 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
         combined_hist_weight=combined_hist_weight,
         combined_match_thresh=combined_match_thresh,
     ) if stable_ids else None
+    if id_assigner is not None:
+        print(id_assigner.config_log_line())
     box_ann, label_ann, trace_ann = build_annotators()
 
     motion_estimator = None
@@ -365,9 +571,19 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
         )
         if do_count:
             print(
-                "[INFO] Entry count: left/right outside → inside; "
-                "once per (class, id); ripe/unripe id는 각각 1부터 (--no-stable-id면 ByteTrack id).",
+                "[INFO] Entry count: 좌/우 바깥 → ROI 안; (class, id)당 1회까지 누적.",
             )
+            if roi_count_use_stable_id:
+                print(
+                    "[INFO] ROI count id: stable 표시 번호 "
+                    "(재식별이 합치면 카운트가 어긋날 수 있음).",
+                )
+            elif stable_ids:
+                print(
+                    "[INFO] ROI count id: ByteTrack | 라벨 번호: stable (표시만 재식별).",
+                )
+            else:
+                print("[INFO] ROI count id: ByteTrack (stable 끔).")
         elif not count_roi_entries:
             print("[INFO] ROI entry counting OFF (--no-roi-count).")
 
@@ -398,10 +614,14 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
             )
     else:
         print("[INFO] Stable IDs OFF (ByteTrack IDs only)")
-    if do_count and not stable_ids:
+    if do_count and not roi_count_use_stable_id and not stable_ids:
         print(
-            "[WARN] Entry count uses ByteTrack id without stable re-ID; "
-            "same fruit may get a new id after a gap and count twice.",
+            "[WARN] ROI count uses ByteTrack id; 짧게 트랙이 끊기면 같은 과일이 두 번 셀 수 있음.",
+        )
+    if do_count and roi_count_use_stable_id and not stable_ids:
+        print(
+            "[WARN] --roi-count-stable-id 는 stable id가 꺼져 있으면 적용되지 않음; "
+            "카운트는 ByteTrack id를 씁니다.",
         )
     if show_window:
         print("[INFO] Press 'q' to quit, 'r' to reset tracker, 'c' to toggle compensation")
@@ -453,6 +673,10 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
                  if c in CLASS_NAMES] if detections.class_id is not None else []
         detections = detections[valid]
 
+        byte_ids_for_count: Optional[np.ndarray] = None
+        if detections.tracker_id is not None:
+            byte_ids_for_count = detections.tracker_id.astype(np.int32, copy=True)
+
         if id_assigner is not None:
             stable = id_assigner.assign(frame_idx, frame, detections)
             detections.tracker_id = stable
@@ -460,10 +684,15 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
         n_ripe = int((detections.class_id == 0).sum()) if detections.class_id is not None else 0
         n_unripe = int((detections.class_id == 1).sum()) if detections.class_id is not None else 0
 
-        if do_count and len(detections) and detections.tracker_id is not None:
+        if roi_count_use_stable_id and stable_ids:
+            count_tracker_ids = detections.tracker_id
+        else:
+            count_tracker_ids = byte_ids_for_count
+
+        if do_count and len(detections) and count_tracker_ids is not None:
             rx1, _, rx2, _ = roi_bounds  # type: ignore[misc]
             for i in range(len(detections)):
-                sid = int(detections.tracker_id[i])
+                sid = int(count_tracker_ids[i])
                 if sid < 0:
                     continue
                 cls = int(detections.class_id[i])
@@ -490,10 +719,17 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
                         else:
                             count_unripe += 1
                         counted_keys.add(ck)
-                        print(
-                            f"[COUNT] {CLASS_NAMES[cls]} #{sid} "
-                            f"via={via} edge | total ripe={count_ripe} unripe={count_unripe}",
+                        log_line = (
+                            f"[COUNT] {CLASS_NAMES[cls]} count_id={sid} "
+                            f"via={via} edge | total ripe={count_ripe} unripe={count_unripe}"
                         )
+                        if (
+                            stable_ids
+                            and not roi_count_use_stable_id
+                            and detections.tracker_id is not None
+                        ):
+                            log_line += f" (label #{int(detections.tracker_id[i])})"
+                        print(log_line)
 
         annotated = frame.copy()
         if do_roi:
@@ -533,6 +769,8 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
                 f"Cumulative count ripe/unripe: {count_ripe}/{count_unripe} | "
                 f"in-ROI now: {n_ripe}/{n_unripe} | FPS: {fps_avg:.1f}"
             )
+        if stable_ids:
+            hud = f"{hud} | {STABLE_ID_LOGIC_TAG}"
         cv2.putText(
             annotated,
             hud,
