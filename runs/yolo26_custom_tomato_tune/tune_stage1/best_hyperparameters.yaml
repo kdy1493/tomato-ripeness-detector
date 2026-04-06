@@ -1,0 +1,10 @@
+# 30/30 iterations complete ✅ (9488.24s)
+# Results saved to /home/dongyub/tomato-ripeness-detector/runs/yolo26_custom_tomato_tune/tune_stage1
+# Best fitness=0.77132 observed at iteration 10
+# Best fitness metrics are {'metrics/precision(B)': 0.88955, 'metrics/recall(B)': 0.8664, 'metrics/mAP50(B)': 0.93366, 'metrics/mAP50-95(B)': 0.77132, 'val/box_loss': 0.76325, 'val/cls_loss': 0.50717, 'val/dfl_loss': 0.00247, 'fitness': 0.77132}
+# Best fitness model is /home/dongyub/tomato-ripeness-detector/runs/yolo26_custom_tomato_tune/train
+lr0: 0.00068
+lrf: 0.06241
+momentum: 0.82588
+weight_decay: 0.00028
+warmup_epochs: 1.95661

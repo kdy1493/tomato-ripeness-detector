@@ -85,11 +85,21 @@ class YOLO26Trainer:
             }
 
         use_ray = kwargs.pop("use_ray", False)
+        max_samples = kwargs.pop("max_samples", None)
+        gpu_per_trial = kwargs.pop("gpu_per_trial", None)
+        grace_period = kwargs.pop("grace_period", None)
+
         if use_ray:
             try:
                 from ray import tune as ray_tune
                 space = {k: ray_tune.uniform(*v) for k, v in space.items()}
                 kwargs["use_ray"] = True
+                if max_samples is not None:
+                    kwargs["iterations"] = max_samples
+                if gpu_per_trial is not None:
+                    kwargs["gpu_per_trial"] = gpu_per_trial
+                if grace_period is not None:
+                    kwargs["grace_period"] = grace_period
             except ImportError:
                 print("Ray Tune not installed, falling back to genetic algorithm.")
                 use_ray = False
@@ -124,5 +134,5 @@ def parse_tune_space(space_config: Dict) -> Dict[str, Tuple[float, float]]:
     parsed = {}
     for key, value in space_config.items():
         if isinstance(value, (list, tuple)) and len(value) == 2:
-            parsed[key] = tuple(value)
+            parsed[key] = (float(value[0]), float(value[1]))
     return parsed

@@ -1,0 +1,138 @@
+# YOLO26 하이퍼파라미터 튜닝 설정 파일
+# 1차 탐색: optimizer / learning dynamics만 탐색 (augmentation은 2차에서)
+# 사용법: python3 scripts/train_yolo26.py -c config/train_yolo26_tune.yaml 2>&1 | tee runs/train_yolo26_tune_$(date +%Y%m%d_%H%M).log
+
+# =============================================================================
+# 실행 모드
+# =============================================================================
+mode: tune
+
+# =============================================================================
+# 모델 설정
+# =============================================================================
+model:
+  size: medium          # nano, small, medium, large, xlarge
+  task: detect
+  pretrained: true
+
+# =============================================================================
+# 학습 설정 (tune 모드에서는 사용되지 않지만 validate/predict 용도로 유지)
+# =============================================================================
+train:
+  data: /home/dongyub/tomato-ripeness-detector/data/custom_tomato_data_yolo/dataset.yaml
+  epochs: 100
+  imgsz: 640
+  batch: -1
+  device: 0
+  workers: 8
+  seed: 42
+  patience: 30
+  save_period: 10
+  project: /home/dongyub/tomato-ripeness-detector/runs
+  name: yolo26_custom_tomato_tuned
+  exist_ok: true
+  resume: false
+  optimizer: auto
+  lr0: 0.01
+  lrf: 0.01
+  momentum: 0.937
+  weight_decay: 0.0005
+  warmup_epochs: 3.0
+  box: 7.5
+  cls: 0.5
+  dfl: 1.5
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+  degrees: 0.0
+  translate: 0.1
+  scale: 0.5
+  fliplr: 0.5
+  flipud: 0.0
+  mosaic: 1.0
+  mixup: 0.0
+  copy_paste: 0.0
+  close_mosaic: 10
+  amp: true
+  cache: true
+
+# =============================================================================
+# 하이퍼파라미터 튜닝 설정
+# =============================================================================
+tune:
+  # --- 기본 설정 ---
+  data: /home/dongyub/tomato-ripeness-detector/data/custom_tomato_data_yolo/dataset.yaml
+  epochs: 20            # 각 반복당 에폭 수
+  patience: 10          # iteration 내부 조기 종료 (epochs의 1/3)
+  imgsz: 640
+  batch: -1             # baseline과 동일하게 auto batch
+  device: 6             # CUDA_VISIBLE_DEVICES로 GPU 지정
+  workers: 8
+  optimizer: AdamW
+  seed: 42
+
+  # --- 저장 설정 ---
+  project: /home/dongyub/tomato-ripeness-detector/runs/yolo26_custom_tomato_tune
+  name: tune_stage1
+  exist_ok: true
+
+  # --- 튜닝 옵션 ---
+  plots: true
+  save: false
+  val: true
+
+  # --- 내장 튜너 (Ray Tune은 혼합 GPU 환경에서 GPU 할당 문제) ---
+  use_ray: false
+  iterations: 30
+
+  # --- 1차 탐색 공간: optimizer / learning dynamics ---
+  space:
+    lr0: [1e-5, 1e-2]           # 초기 학습률
+    lrf: [0.05, 0.2]            # 최종 학습률 비율 (좁게)
+    momentum: [0.8, 0.97]       # 모멘텀 (안정 범위)
+    weight_decay: [1e-5, 1e-3]  # 가중치 감소 (0 제외, 과적합 방지)
+    warmup_epochs: [0.0, 5.0]   # 워밍업 에폭
+    # --- 2차 탐색에서 추가할 augmentation ---
+    # mosaic: [0.0, 1.0]
+    # mixup: [0.0, 1.0]
+    # scale: [0.0, 0.9]
+    # translate: [0.0, 0.9]
+    # degrees: [0.0, 45.0]
+    # fliplr: [0.0, 1.0]
+
+# =============================================================================
+# 검증 설정
+# =============================================================================
+validate:
+  data: /home/dongyub/tomato-ripeness-detector/data/custom_tomato_data_yolo/dataset.yaml
+  split: test
+  imgsz: 640
+  batch: 16
+  conf: 0.001
+  iou: 0.6
+  save_json: true
+  plots: true
+
+# =============================================================================
+# 추론 설정
+# =============================================================================
+predict:
+  source: /home/dongyub/tomato-ripeness-detector/data/custom_tomato_data_yolo/images/test
+  imgsz: 640
+  conf: 0.25
+  iou: 0.45
+  max_det: 300
+  save: true
+  save_txt: false
+  save_conf: true
+
+# =============================================================================
+# 모델 내보내기 설정
+# =============================================================================
+export:
+  format: onnx
+  imgsz: 640
+  half: false
+  int8: false
+  dynamic: false
+  simplify: true
