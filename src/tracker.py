@@ -2,7 +2,8 @@
 
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -16,7 +17,7 @@ CLASS_COLORS = sv.ColorPalette.from_hex([
     "#00CC00",  # class 1: unripe → green
 ])
 
-DEFAULT_MODEL = r"runs\yolo26_merged_tomato\weights\epoch80.pt"
+DEFAULT_MODEL = r"runs\yolo26_custom_tomato\trained_yolo26_custom.pt"
 
 
 @dataclass
@@ -267,11 +268,29 @@ def build_motion_compensator():
     return estimator, motion_trace
 
 
-def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
+def _roi_inclusive_bounds(
+    frame_w: int, frame_h: int, roi_half_width: Optional[int],
+) -> Optional[Tuple[int, int, int, int]]:
+    """Return inclusive (x1, y1, x2, y2) in full-frame coords, or None = full frame."""
+    if roi_half_width is None or roi_half_width <= 0:
+        return None
+    cx = frame_w // 2
+    x1 = max(0, cx - roi_half_width)
+    x2 = min(frame_w - 1, cx + roi_half_width)
+    if x2 <= x1 + 4:
+        return None
+    y1, y2 = 0, frame_h - 1
+    return (x1, y1, x2, y2)
+
+
+def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.8, nms=0.3,
         compensation=False, min_frames=1, stable_ids=True,
         lost_ttl_frames=900, byte_lost_buffer=120, hist_match_thresh=0.62,
         use_position_reid: bool = True, position_sigma_px: float = 200.0,
-        combined_hist_weight: float = 0.65, combined_match_thresh: float = 0.55):
+        combined_hist_weight: float = 0.65, combined_match_thresh: float = 0.55,
+        output_path: Optional[str] = None, show_window: bool = True,
+        roi_half_width: Optional[int] = None,
+        count_roi_entries: bool = True):
     """Run real-time tracking loop.
 
     Args:
@@ -289,6 +308,13 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
         position_sigma_px: Distance at which position score nears 0.
         combined_hist_weight: Weight of hist in combined score (rest is position).
         combined_match_thresh: Min combined score when use_position_reid True.
+        output_path: If set, save annotated frames to this video file (e.g. .mp4).
+        show_window: If False, skip imshow (use with output_path for batch encode).
+        roi_half_width: If set, detect only on a full-height strip centered on the frame,
+            half-width n px each side (inclusive span ~2n+1). None = full frame.
+        count_roi_entries: If True and ROI is active, increment class counts when a
+            stable ID first enters the strip from the left outside (x < x1) or right
+            outside (x > x2); each ID counts at most once until tracker reset.
     """
     model = YOLO(model_path)
     vid_source = int(source) if isinstance(source, str) and source.isdigit() else source
@@ -323,6 +349,35 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
 
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    roi_bounds = _roi_inclusive_bounds(w, h, roi_half_width)
+    do_roi = roi_bounds is not None
+    do_count = bool(do_roi and count_roi_entries)
+    if roi_half_width is not None and roi_half_width > 0 and not do_roi:
+        print("[WARN] ROI half-width too large or narrow for frame; using full frame.")
+    if do_roi:
+        rx1, ry1, rx2, ry2 = roi_bounds  # type: ignore[misc]
+        print(
+            f"[INFO] ROI strip (detect): x=[{rx1},{rx2}] y=[{ry1},{ry2}] "
+            f"(center±{roi_half_width}px)",
+        )
+        if do_count:
+            print(
+                "[INFO] Entry count: left edge (x<ROI) or right edge (x>ROI) "
+                "→ inside; once per stable ID (--no-stable-id면 ByteTrack id).",
+            )
+        elif not count_roi_entries:
+            print("[INFO] ROI entry counting OFF (--no-roi-count).")
+
+    writer: Optional[cv2.VideoWriter] = None
+    if output_path:
+        outp = Path(output_path)
+        outp.parent.mkdir(parents=True, exist_ok=True)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(outp), fourcc, fps_hint, (w, h))
+        if not writer.isOpened():
+            raise RuntimeError(f"Cannot open VideoWriter for: {outp}")
+        print(f"[INFO] Saving annotated video -> {outp.resolve()}")
+
     print(f"[INFO] Source: {source} ({w}x{h})")
     print(f"[INFO] Model: {model_path}")
     print(f"[INFO] Confidence: {conf} / NMS: {nms}")
@@ -340,11 +395,22 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
             )
     else:
         print("[INFO] Stable IDs OFF (ByteTrack IDs only)")
-    print("[INFO] Press 'q' to quit, 'r' to reset tracker, 'c' to toggle compensation")
+    if do_count and not stable_ids:
+        print(
+            "[WARN] Entry count uses ByteTrack id without stable re-ID; "
+            "same fruit may get a new id after a gap and count twice.",
+        )
+    if show_window:
+        print("[INFO] Press 'q' to quit, 'r' to reset tracker, 'c' to toggle compensation")
 
     fps_avg = 0.0
     alpha = 0.1
     frame_idx = 0
+    count_ripe = 0
+    count_unripe = 0
+    counted_ids: set[int] = set()
+    arm_left: Dict[int, bool] = {}
+    arm_right: Dict[int, bool] = {}
 
     while True:
         t0 = time.perf_counter()
@@ -360,10 +426,23 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
             except Exception:
                 coord_transform = None
 
-        results = model(frame, conf=conf, verbose=False)[0]
-        detections = sv.Detections.from_ultralytics(results).with_nms(
-            threshold=nms,
-        )
+        if do_roi:
+            rx1, ry1, rx2, ry2 = roi_bounds  # type: ignore[misc]
+            roi_img = frame[ry1 : ry2 + 1, rx1 : rx2 + 1]
+            results = model(roi_img, conf=conf, verbose=False)[0]
+            detections = sv.Detections.from_ultralytics(results).with_nms(
+                threshold=nms,
+            )
+            if len(detections):
+                d_xy = np.asarray(detections.xyxy, dtype=np.float64).copy()
+                d_xy[:, [0, 2]] += float(rx1)
+                d_xy[:, [1, 3]] += float(ry1)
+                detections.xyxy = d_xy
+        else:
+            results = model(frame, conf=conf, verbose=False)[0]
+            detections = sv.Detections.from_ultralytics(results).with_nms(
+                threshold=nms,
+            )
         detections = tracker.update(detections)
 
         # ripe(0), unripe(1)만 남기기
@@ -378,7 +457,48 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
         n_ripe = int((detections.class_id == 0).sum()) if detections.class_id is not None else 0
         n_unripe = int((detections.class_id == 1).sum()) if detections.class_id is not None else 0
 
+        if do_count and len(detections) and detections.tracker_id is not None:
+            rx1, _, rx2, _ = roi_bounds  # type: ignore[misc]
+            for i in range(len(detections)):
+                sid = int(detections.tracker_id[i])
+                if sid < 0:
+                    continue
+                if sid in counted_ids:
+                    continue
+                cls = int(detections.class_id[i])
+                if cls not in CLASS_NAMES:
+                    continue
+                x1b, _, x2b, _ = detections.xyxy[i]
+                cx = 0.5 * (float(x1b) + float(x2b))
+                if cx < float(rx1):
+                    arm_left[sid] = True
+                elif cx > float(rx2):
+                    arm_right[sid] = True
+                elif float(rx1) <= cx <= float(rx2):
+                    via = None
+                    if arm_left.get(sid):
+                        via = "left"
+                    elif arm_right.get(sid):
+                        via = "right"
+                    if via is not None:
+                        if cls == 0:
+                            count_ripe += 1
+                        else:
+                            count_unripe += 1
+                        counted_ids.add(sid)
+                        print(
+                            f"[COUNT] id={sid} class={CLASS_NAMES[cls]} "
+                            f"via={via} edge | total ripe={count_ripe} unripe={count_unripe}",
+                        )
+
         annotated = frame.copy()
+        if do_roi:
+            rx1, ry1, rx2, ry2 = roi_bounds  # type: ignore[misc]
+            cv2.rectangle(
+                annotated, (rx1, ry1), (rx2, ry2), (255, 200, 0), 2,
+            )
+            cv2.line(annotated, (rx1, ry1), (rx1, ry2), (0, 255, 255), 2)
+            cv2.line(annotated, (rx2, ry1), (rx2, ry2), (255, 0, 255), 2)
         annotated = box_ann.annotate(annotated, detections)
 
         if motion_trace_ann is not None and coord_transform is not None:
@@ -400,21 +520,34 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
         fps = 1.0 / dt if dt > 0 else 0
         fps_avg = alpha * fps + (1 - alpha) * fps_avg if fps_avg > 0 else fps
 
+        hud = (
+            f"Frame ripe/unripe: {n_ripe}/{n_unripe} | "
+            f"FPS: {fps_avg:.1f}"
+        )
+        if do_count:
+            hud = (
+                f"Cumulative count ripe/unripe: {count_ripe}/{count_unripe} | "
+                f"in-ROI now: {n_ripe}/{n_unripe} | FPS: {fps_avg:.1f}"
+            )
         cv2.putText(
             annotated,
-            f"Ripe: {n_ripe} | Unripe: {n_unripe} | FPS: {fps_avg:.1f}",
+            hud,
             (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
+            0.65,
             (0, 255, 0),
             2,
         )
 
-        cv2.imshow("YOLO26 Real-time Tracking", annotated)
+        if writer is not None:
+            writer.write(annotated)
+
+        if show_window:
+            cv2.imshow("YOLO26 Real-time Tracking", annotated)
 
         frame_idx += 1
 
-        key = cv2.waitKey(1) & 0xFF
+        key = (cv2.waitKey(1) & 0xFF) if show_window else 0xFF
         if key == ord("q"):
             break
         elif key == ord("r"):
@@ -423,8 +556,13 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
                 id_assigner.reset()
             if motion_estimator is not None:
                 motion_estimator.reset()
+            counted_ids.clear()
+            arm_left.clear()
+            arm_right.clear()
+            count_ripe = 0
+            count_unripe = 0
             frame_idx = 0
-            print("[INFO] Tracker reset")
+            print("[INFO] Tracker reset (counts and entry arms cleared)")
         elif key == ord("c"):
             if motion_estimator is None:
                 motion_estimator, motion_trace_ann = build_motion_compensator()
@@ -435,7 +573,15 @@ def run(*, source="0", model_path=DEFAULT_MODEL, conf=0.2, nms=0.3,
                 print("[INFO] Compensation OFF")
 
     cap.release()
-    cv2.destroyAllWindows()
+    if writer is not None:
+        writer.release()
+        print("[INFO] Output video write complete.")
+    if show_window:
+        cv2.destroyAllWindows()
+    if do_count:
+        print(
+            f"[INFO] Session entry counts: ripe={count_ripe}, unripe={count_unripe}",
+        )
     print("[INFO] Done.")
 
 

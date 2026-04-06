@@ -6,6 +6,10 @@ YOLO26 + ByteTrack 실시간 트래킹 실행 스크립트.
     python scripts/realtime_tracking.py --source rtsp://192.168.0.100:554/stream
     python scripts/realtime_tracking.py --compensation
     python scripts/realtime_tracking.py --model path/to/best.pt --conf 0.3
+    python scripts/realtime_tracking.py --source notebook/rgb.mp4 --out runs/out-tracked.mp4
+    python scripts/realtime_tracking.py --source notebook/rgb.mp4 --out runs/out.mp4 --headless
+    python scripts/realtime_tracking.py --source vid.mp4 --roi-half-width 320
+    python scripts/realtime_tracking.py --source vid.mp4 --roi-half-width 320 --no-roi-count
 """
 
 import sys
@@ -23,7 +27,7 @@ def main():
                         help="웹캠 인덱스 (0,1,...) 또는 RTSP/파일 경로")
     parser.add_argument("--model", default=None,
                         help="YOLO 모델 가중치 경로")
-    parser.add_argument("--conf", type=float, default=0.2,
+    parser.add_argument("--conf", type=float, default=0.8,
                         help="검출 신뢰도 임계값")
     parser.add_argument("--nms", type=float, default=0.3,
                         help="NMS IoU 임계값")
@@ -47,7 +51,25 @@ def main():
                         help="HSV+위치 결합 점수 임계값 (위치 가중 켤 때)")
     parser.add_argument("--byte-buffer", type=int, default=120,
                         help="ByteTrack lost_track_buffer (프레임)")
+    parser.add_argument("--out", default=None,
+                        help="주석 입힌 영상 저장 경로 (.mp4 권장)")
+    parser.add_argument("--headless", action="store_true",
+                        help="미리보기 창 끄기 (--out 과 함께 쓰면 인코딩만 빠르게)")
+    parser.add_argument(
+        "--roi-half-width",
+        type=int,
+        default=None,
+        metavar="N",
+        help="세로 전체·가로는 화면 중앙±N px만 YOLO 검출 (None이면 전체 프레임)",
+    )
+    parser.add_argument(
+        "--no-roi-count",
+        action="store_true",
+        help="ROI 검출만 하고 ROI 좌/우 입구 기준 누적 카운트는 끔",
+    )
     args = parser.parse_args()
+    if args.headless and not args.out:
+        parser.error("--headless 는 --out 과 함께 사용하세요 (저장 없이 창만 끄려면 생략).")
 
     kwargs = dict(
         source=args.source,
@@ -63,6 +85,10 @@ def main():
         combined_hist_weight=args.combined_hist_weight,
         combined_match_thresh=args.combined_match,
         byte_lost_buffer=args.byte_buffer,
+        output_path=args.out,
+        show_window=not args.headless,
+        roi_half_width=args.roi_half_width,
+        count_roi_entries=not args.no_roi_count,
     )
     if args.model is not None:
         kwargs["model_path"] = args.model
