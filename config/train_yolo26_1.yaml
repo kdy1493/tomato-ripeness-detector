@@ -20,7 +20,7 @@ model:
 # =============================================================================
 train:
   # --- 데이터셋 ---
-  data: data/custom_tomato_data_yolo/dataset.yaml
+  data: data/custom_tomato_dataset/custom_tomato_data_yolo/dataset.yaml
 
   # --- 기본 학습 파라미터 ---
   epochs: 100
@@ -35,7 +35,7 @@ train:
 
   # --- 저장 설정 ---
   save_period: 10     # 체크포인트 저장 주기
-  project: /home/dongyub/tomato-ripeness-detector/runs
+  project: runs
   name: yolo26_custom_tomato_tune1
   exist_ok: true
   resume: false     # 이전 학습 재개
@@ -76,7 +76,7 @@ train:
 # =============================================================================
 tune:
   # --- 기본 설정 ---
-  data: data/custom_tomato_data_yolo/dataset.yaml
+  data: data/custom_tomato_dataset/custom_tomato_data_yolo/dataset.yaml
   iterations: 100       # 튜닝 반복 횟수
   epochs: 30            # 각 반복당 에폭 수
   imgsz: 640
@@ -87,7 +87,7 @@ tune:
   seed: 42
 
   # --- 저장 설정 ---
-  project: /home/dongyub/tomato-ripeness-detector/runs/tune
+  project: runs/tune
   name: null            # null = 자동 생성
   exist_ok: true
 
@@ -126,7 +126,7 @@ tune:
 # 검증 설정
 # =============================================================================
 validate:
-  data: data/custom_tomato_data_yolo/dataset.yaml
+  data: data/custom_tomato_dataset/custom_tomato_data_yolo/dataset.yaml
   split: test           # val, test
   imgsz: 640
   batch: 16
@@ -139,8 +139,8 @@ validate:
 # 추론 설정
 # =============================================================================
 predict:
-  source: data/custom_tomato_data_yolo/images/test
-  imgsz: 64
+  source: data/custom_tomato_dataset/custom_tomato_data_yolo/images/test
+  imgsz: 640
   conf: 0.25            # 신뢰도 임계값
   iou: 0.45             # NMS IoU 임계값
   max_det: 300          # 이미지당 최대 검출 수

@@ -19,7 +19,7 @@ model:
 # 학습 설정 (tune 모드에서는 사용되지 않지만 validate/predict 용도로 유지)
 # =============================================================================
 train:
-  data: /home/dongyub/tomato-ripeness-detector/data/custom_tomato_data_yolo/dataset.yaml
+  data: data/custom_tomato_dataset/custom_tomato_data_yolo/dataset.yaml
   epochs: 100
   imgsz: 640
   batch: -1
@@ -28,7 +28,7 @@ train:
   seed: 42
   patience: 30
   save_period: 10
-  project: /home/dongyub/tomato-ripeness-detector/runs
+  project: runs
   name: yolo26_custom_tomato_tuned
   exist_ok: true
   resume: false
@@ -61,7 +61,7 @@ train:
 # =============================================================================
 tune:
   # --- 기본 설정 ---
-  data: /home/dongyub/tomato-ripeness-detector/data/custom_tomato_data_yolo/dataset.yaml
+  data: data/custom_tomato_dataset/custom_tomato_data_yolo/dataset.yaml
   epochs: 20            # 각 반복당 에폭 수
   patience: 10          # iteration 내부 조기 종료 (epochs의 1/3)
   imgsz: 640
@@ -72,7 +72,7 @@ tune:
   seed: 42
 
   # --- 저장 설정 ---
-  project: /home/dongyub/tomato-ripeness-detector/runs/yolo26_custom_tomato_tune
+  project: runs/yolo26_custom_tomato_tune
   name: tune_stage1
   exist_ok: true
 
@@ -104,7 +104,7 @@ tune:
 # 검증 설정
 # =============================================================================
 validate:
-  data: /home/dongyub/tomato-ripeness-detector/data/custom_tomato_data_yolo/dataset.yaml
+  data: data/custom_tomato_dataset/custom_tomato_data_yolo/dataset.yaml
   split: test
   imgsz: 640
   batch: 16
@@ -117,7 +117,7 @@ validate:
 # 추론 설정
 # =============================================================================
 predict:
-  source: /home/dongyub/tomato-ripeness-detector/data/custom_tomato_data_yolo/images/test
+  source: data/custom_tomato_dataset/custom_tomato_data_yolo/images/test
   imgsz: 640
   conf: 0.25
   iou: 0.45

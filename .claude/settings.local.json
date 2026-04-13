@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//d/custom_tomato_dataset/**)",
+      "Read(//d/public-tomato-data/merged_dataset/images/**)"
+    ]
+  }
+}
