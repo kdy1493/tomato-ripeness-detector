@@ -33,3 +33,4 @@ data/
 *.python-version
 *.pdf
 *.txt
+notebook/rgb_frames/

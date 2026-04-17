@@ -1,0 +1,18 @@
+{
+  "classes": [
+    {
+      "title": "ripe",
+      "shape": "rectangle",
+      "color": "#FF5050",
+      "hotkey": ""
+    },
+    {
+      "title": "unripe",
+      "shape": "rectangle",
+      "color": "#50C878",
+      "hotkey": ""
+    }
+  ],
+  "tags": [],
+  "projectType": "videos"
+}
